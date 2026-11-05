@@ -26,6 +26,9 @@ def clipped(tbx, fake, collection):
     ]
     fake.CALLS.clear()
     fake.MESSAGES.clear()
+    scratch = os.path.join(collection.root, "scratch")
+    os.makedirs(scratch)
+    fake.env.scratchFolder = scratch
     return collection
 
 
@@ -49,6 +52,7 @@ def test_defaults_and_transformation_dropdown(tbx, fake, collection):
     assert p["group_field"].value == "Folha_25k" and p["code_field"].value == "COD_50255k"
     assert p["out_sr"].value.factoryCode == 3763
     assert p["cell_size"].value == 0.4 and p["nodata"].value == 0
+    assert p["expand_grey"].value is True
     params = list(p.values())
     p["cartogram"].value, p["cartogram"].altered = "carto", True
     tool.updateParameters(params)
@@ -129,9 +133,45 @@ def test_two_copies_of_a_sheet_stop_the_run(tbx, fake, clipped):
     assert "switch off all but one copy" in errors[-1]
 
 
+def test_greyscale_among_rgb_is_expanded(tbx, fake, clipped, monkeypatch):
+    grey = os.path.join(clipped.out, "MAG_51B61001.tif")
+    fake.RASTERS[grey]["bands"] = 1
+    monkeypatch.setattr(tbx, "_has_colour_table", lambda p: False)
+    _mosaic(tbx, clipped)
+    mos = calls(fake, "MosaicToNewRaster")
+    assert [c[1][2] for c in mos] == ["MAG_Folha_25k_609.tif", "MAG_Folha_25k_610.tif"]
+    assert all(c[1][6] == 3 for c in mos)
+    tmp = os.path.join(clipped.root, "scratch", "msm_rgb_MAG_51B61001.tif")
+    # group 610 mosaics the temporary copy instead of the single-band sheet
+    assert tmp in mos[1][1][0].split(";") and grey not in mos[1][1][0].split(";")
+    comp = calls(fake, "CompositeBands")
+    assert len(comp) == 1 and comp[0][1] == ([grey, grey, grey], tmp)
+    # copy made in the native CRS: projecting / clipping settings cleared
+    assert comp[0][2]["outputCoordinateSystem"] is None and comp[0][2]["extent"] is None
+    assert ("SetRasterProperties", (tmp,), {"nodata": "1 0;2 0;3 0"}) in fake.CALLS
+    assert tmp not in fake.EXISTING                       # temporary copy deleted
+    assert fake.RASTERS[grey]["bands"] == 1               # tool 1 output untouched
+    rows = read_csv(latest(clipped.mosaic, "MAG_mosaic_Folha_25k_*.csv"))
+    assert rows[1]["notes"] == "expanded to 3 bands: MAG_51B61001.tif"
+    assert rows[1]["bands"] == "3" and rows[0]["notes"] == ""
+    assert not _errors(fake)
+
+
+@pytest.mark.parametrize("colour_table", [True, None])
+def test_palette_or_unreadable_single_band_is_not_expanded(tbx, fake, clipped,
+                                                           monkeypatch, colour_table):
+    fake.RASTERS[os.path.join(clipped.out, "MAG_51B61001.tif")]["bands"] = 1
+    monkeypatch.setattr(tbx, "_has_colour_table", lambda p: colour_table)
+    _mosaic(tbx, clipped)
+    assert not calls(fake, "MosaicToNewRaster") and not calls(fake, "CompositeBands")
+    errors = _errors(fake)
+    assert any(t.startswith("Single-band rasters with a colour table") and
+               t.endswith("MAG_51B61001.tif") for t in errors)
+
+
 def test_mixed_band_count_stops_the_run(tbx, fake, clipped):
     fake.RASTERS[os.path.join(clipped.out, "MAG_51B61001.tif")]["bands"] = 1
-    _mosaic(tbx, clipped)
+    _mosaic(tbx, clipped, expand_grey=False)
     assert not calls(fake, "MosaicToNewRaster")
     errors = _errors(fake)
     assert any("share pixel type and band count" in t for t in errors)

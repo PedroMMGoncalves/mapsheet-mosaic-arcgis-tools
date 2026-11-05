@@ -27,6 +27,13 @@ STATE = {"honour_extent": True, "active_map": True}
 SHIFT = (-287000.3, -300000.7)
 _ENV = []
 
+
+class _Env(object):
+    scratchFolder = None
+
+
+env = _Env()
+
 _DTYPES = {"U8": np.uint8, "U16": np.uint16, "S16": np.int16, "F32": np.float32}
 _PTYPE_OF = {"8_BIT_UNSIGNED": "U8", "16_BIT_UNSIGNED": "U16",
              "16_BIT_SIGNED": "S16", "32_BIT_FLOAT": "F32"}
@@ -36,6 +43,7 @@ def reset():
     for container in (RASTERS, FCS, LAYERS, CALLS, EXISTING, MESSAGES, _ENV):
         container.clear()
     STATE.update(honour_extent=True, active_map=True)
+    env.scratchFolder = None
 
 
 # ---- messages / progressor --------------------------------------------------
@@ -220,6 +228,12 @@ class management(object):
         src = RASTERS[in_raster]
         RASTERS[out_raster] = dict(src, extent=tuple(float(v) for v in rectangle.split()),
                                    nodata_px=0, source_nodata_px=0)
+        EXISTING.add(out_raster)
+
+    @staticmethod
+    def CompositeBands(inputs, out_raster):
+        CALLS.append(("CompositeBands", (list(inputs), out_raster), dict(_ENV[-1]) if _ENV else {}))
+        RASTERS[out_raster] = dict(RASTERS[inputs[0]], bands=len(inputs))
         EXISTING.add(out_raster)
 
     @staticmethod

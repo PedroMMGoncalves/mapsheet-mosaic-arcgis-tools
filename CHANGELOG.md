@@ -9,6 +9,12 @@ versioning follows [Semantic Versioning](https://semver.org/). `TOOLBOX_VERSION`
 
 ### Added
 
+- Tool 2: single-band greyscale rasters among three-band rasters of the same pixel type
+  are mosaicked through temporary three-band copies (band repeated with Composite Bands,
+  values and grid unchanged, NoData on all bands); the copies are deleted after each
+  mosaic and the Tool 1 outputs are not modified. Palette rasters (colour table, detected
+  with GDAL) are not expanded and stop the run. New parameter *Expand single-band
+  greyscale inputs to three bands*, on by default.
 - Tool 1: CSV column `n_copies` (copies of the sheet in the run) and, at the end of the
   log, the list of sheets with more than one copy, giving output name, variant, cell
   size and band count of each copy.

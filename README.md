@@ -97,7 +97,7 @@ flowchart TD
     G1 -- no --> STOP["Stop, nothing written<br/>errors listed in the log"]
     G1 -- yes --> G2{"One raster per sheet?"}
     G2 -- no --> STOP
-    G2 -- yes --> G3{"Common pixel type and band count,<br/>NoData value representable?"}
+    G2 -- yes --> G3{"Common pixel type and band count<br/>(greyscale among RGB expanded),<br/>NoData value representable?"}
     G3 -- no --> STOP
     G3 -- yes --> TR["Datum transformation<br/>explicit, NTv2 preferred"]
     TR --> GR["Group by field value<br/>list missing sheets"]
@@ -219,6 +219,32 @@ scan) are read as a different value and are not counted. NoData is stored per
 band, so a counted pixel loses only the affected band(s), which appears as a
 hole or as a colour defect. No colour balancing is applied between scans.
 
+### Greyscale and RGB sheets in one mosaic
+
+Archives often mix single-band greyscale scans with three-band RGB scans of
+the same series. A mosaic needs one band count, so, when the inputs of a
+Tool 2 run combine single-band and three-band rasters of the same pixel type,
+each single-band raster is mosaicked through a temporary three-band copy in
+which its band is repeated:
+
+```math
+(R, G, B) = (v, v, v)
+```
+
+The copy is made with *Composite Bands* in the native coordinate system;
+cell values and grid are copied unchanged (no resampling), the NoData value
+is set on all three bands, and the copy is deleted after the mosaic. The
+clipped sheets of Tool 1 are not modified. All mosaics of the run then have
+three bands, including groups that contain only greyscale sheets; a run made
+only of single-band sheets produces single-band mosaics. The expanded sheets
+are listed in the log and in the `notes` column of the Tool 2 CSV.
+
+Only plain greyscale rasters are expanded. A single-band raster with a colour
+table (palette raster) stores class indices, not grey levels; repeating its
+band would produce wrong colours, so such rasters, and rasters whose colour
+table cannot be read with GDAL, stop the run. The behaviour can be switched
+off with *Expand single-band greyscale inputs to three bands*.
+
 ---
 
 ## Requirements
@@ -286,6 +312,7 @@ foreground.
 | Cell size | Output cell size in output coordinate system units | 0.4 |
 | Resampling method | `BILINEAR`, `NEAREST` or `CUBIC`; also used for pyramids | `BILINEAR` |
 | NoData value | Assigned to all bands of the mosaics; use the value of Tool 1 | 0 |
+| Expand single-band greyscale inputs to three bands | When the other inputs are RGB, mosaic greyscale sheets through temporary three-band copies (see [Greyscale and RGB sheets in one mosaic](#greyscale-and-rgb-sheets-in-one-mosaic)) | on |
 
 ---
 
@@ -433,6 +460,7 @@ scope of the suite and is validated in ArcGIS Pro.
 | Tool 1, sheet identification, clipping and reporting | Validated in ArcGIS Pro on 254 rasters in its original form: about 16 s per raster for clipping with LZW compression, pyramids and statistics, about 0.5 s for the pixel check, 70 min in total |
 | Tool 1, parameters added in 0.1.0 (extensions, CSV fields, NoData value) | Covered by the test suite; pending validation in ArcGIS Pro |
 | Tool 2 | Covered by the test suite; pending validation in ArcGIS Pro: population of the transformation list, honouring of the extent environment (absence of the alignment warning), absence of systematic offsets against a PT-TM06 reference, mosaic background written with the NoData value |
+| Tool 2, greyscale expansion | Three-band copy verified with ArcGIS Pro 3.7 on one greyscale sheet: same coordinate system, extent and cell size, NoData on all bands, each band identical to the source cell by cell, temporary copy deleted. A mosaic containing expanded sheets is pending validation |
 
 ---
 
@@ -457,7 +485,9 @@ scope of the suite and is validated in ArcGIS Pro.
 - **Overlaps.** Where inputs overlap (sheet boundaries), the last input in
   sorted order is kept (mosaic method `LAST`).
 - **Homogeneous inputs.** All inputs of a Tool 2 run must share pixel type
-  and band count.
+  and band count, except that single-band greyscale rasters among three-band
+  rasters are expanded (R = G = B). An expanded sheet is displayed as in the
+  original scan but carries no colour information.
 - **Input listing.** Tool 1 lists raster files in folders; rasters stored in
   geodatabases are not listed. Tool 1 always writes GeoTIFF.
 
@@ -473,7 +503,8 @@ scope of the suite and is validated in ArcGIS Pro.
 | `LOW_COVERAGE` | Partial scan, georeferencing error, or raster straddling two sheets | Inspect `coverage_pct` and the raster against the cartogram; adjust *Minimum sheet coverage* if partial sheets are expected |
 | Warning `pixels equal to NoData` | Image pixels (e.g. black ink) carry the NoData value | Choose a NoData value absent from the data (see band minima in the raster statistics) and run again into a new output folder |
 | Tool 2: `Only one raster per cartogram sheet is allowed` | More than one copy of a sheet visible or listed; the sheets and their rasters are listed below the message | Switch off all but one copy of each listed sheet (a layer counts as visible only if all its parent group layers are on); the end of the Tool 1 log lists the same sheets with variant and cell size of each copy |
-| Tool 2: `All inputs must share pixel type and band count` | Inputs mix, e.g., single-band greyscale scans with three-band RGB scans; the deviating rasters are listed | Switch off the listed rasters, or convert them: a greyscale raster becomes an equivalent three-band raster with *Composite Bands* using its band three times (values copied, no resampling); then switch off the single-band original. Check the `bands` column of the Tool 1 CSV |
+| Tool 2: `All inputs must share pixel type and band count` | Inputs differ in pixel type, or in band count in a way that is not expanded automatically (e.g. palette rasters, four-band rasters, or the expansion option switched off); the deviating rasters are listed | Switch off the listed rasters, or convert them beforehand (e.g. *Colormap To RGB* for palette rasters). Check the `bands` and `pixel_type` columns of the Tool 1 CSV |
+| Tool 2: `Single-band rasters with a colour table, or not readable by GDAL, are not expanded` | The listed single-band rasters are palette rasters, or GDAL cannot open them | Convert palette rasters with *Colormap To RGB* and switch off the originals |
 | Tool 2: visible layers reported as ignored | File names do not start with `PREFIX_` | Use the prefix of Tool 1, or list the rasters under *Additional rasters* |
 | Tool 2: `Datums differ ... and no transformation is available`, or no NTv2 option in the list | `ListTransformations` returns no (grid) transformation for the coordinate system pair | Install the *ArcGIS Coordinate Systems Data* grids, or register the Portuguese NTv2 grid as a custom geographic transformation (see [Datum transformation](#datum-transformation-ntv2-grids-for-portugal)); the list accepts only names returned by `ListTransformations` |
 | Tool 2: `grid not aligned to multiples of the cell size` | Extent environment not honoured by the geoprocessing tool | The mosaic is valid but off the common grid; report the case with the `.log` |

@@ -22,11 +22,12 @@ Workflow
 
 Dependencies
 ------------
-- ArcGIS Pro 3.x with its default Python environment (arcpy, numpy);
-  Python standard library otherwise. No additional packages.
-- Clip, Mosaic To New Raster, Set Raster Properties, Calculate Statistics
-  and Build Pyramids are Data Management tools available at every licence
-  level.
+- ArcGIS Pro 3.x with its default Python environment (arcpy, numpy, and
+  GDAL/osgeo to detect colour tables); Python standard library otherwise.
+  No additional packages.
+- Clip, Composite Bands, Mosaic To New Raster, Set Raster Properties,
+  Calculate Statistics and Build Pyramids are Data Management tools
+  available at every licence level.
 - Tool 2 reads the CURRENT project (visible layers) and therefore runs in
   the foreground only.
 
@@ -44,6 +45,11 @@ Design decisions
   Tool 1 optionally counts source pixels inside the sheet that already
   carry this value, since they become NoData after clipping.
 - Pixel type and band count of the mosaics are taken from the inputs.
+  When single-band greyscale rasters (no colour table) occur among
+  three-band rasters of the same pixel type, tool 2 mosaics temporary
+  three-band copies of them (band repeated with Composite Bands, values and
+  grid unchanged); the copies are deleted after each mosaic and the clipped
+  sheets of tool 1 are left as they are. Optional, on by default.
 - No radiometric balancing: each scan keeps its original tones.
 - The choice between duplicate scans is left to the operator; neither tool
   selects copies automatically.
@@ -98,7 +104,12 @@ Methodological limitations
 - Datums are compared by geographic CRS name. When they differ, a datum
   transformation is always applied explicitly; a transformation whose
   name contains "NTv2" is preferred when listed.
-- All inputs of a tool 2 run must share pixel type and band count.
+- All inputs of a tool 2 run must share pixel type and band count, except
+  for the expansion of single-band greyscale rasters described above.
+  Palette rasters (colour table), rasters whose colour table cannot be read
+  with GDAL, and other band-count combinations stop the run.
+- A greyscale sheet expanded to three bands has R = G = B; it is displayed
+  as in the original scan but carries no colour information.
 - Tool 1 lists raster files by extension in a folder tree; rasters stored
   inside geodatabases are not listed. Tool 1 always writes GeoTIFF.
 """
@@ -110,6 +121,7 @@ import math
 import os
 import re
 import time
+import warnings
 from types import SimpleNamespace
 
 import arcpy
@@ -399,6 +411,39 @@ def _clip(in_path, sheet, out_path, nodata):
                                 sheet["xmax"], sheet["ymax"])
     arcpy.management.Clip(in_path, rect, out_path, TMP_CLIP_FC, str(nodata),
                           "ClippingGeometry", "NO_MAINTAIN_EXTENT")
+
+
+def _has_colour_table(path):
+    """True if band 1 carries a colour table (palette raster), False if it
+    does not (plain greyscale), None if this cannot be determined (GDAL not
+    importable or format not readable by GDAL)."""
+    try:
+        with warnings.catch_warnings():  # GDAL exception-mode FutureWarning
+            warnings.simplefilter("ignore", FutureWarning)
+            from osgeo import gdal  # bundled with ArcGIS Pro
+            ds = gdal.Open(path)
+            if ds is None:
+                return None
+            return ds.GetRasterBand(1).GetColorTable() is not None
+    except Exception:
+        return None
+
+
+def _expand_to_rgb(path, out_path, nodata):
+    """Write a three-band copy of a single-band greyscale raster.
+
+    The band is repeated three times with Composite Bands, so cell values
+    and grid are copied unchanged (no resampling), and the NoData value is
+    set on all bands. Environment settings that could project, clip or snap
+    the copy are cleared for the call.
+    """
+    if arcpy.Exists(out_path):
+        arcpy.management.Delete(out_path)
+    with arcpy.EnvManager(outputCoordinateSystem=None, extent=None, snapRaster=None,
+                          pyramid="NONE", rasterStatistics="NONE"):
+        arcpy.management.CompositeBands([path, path, path], out_path)
+    arcpy.management.SetRasterProperties(
+        out_path, nodata="1 {0};2 {0};3 {0}".format(nodata))
 
 
 def _param(name, label, dtype, direction="Input", ptype="Required",
@@ -788,8 +833,11 @@ class MosaicSheets(object):
         p_rs.filter.type = "ValueList"
         p_rs.filter.list = ["BILINEAR", "NEAREST", "CUBIC"]
         p_nd = _param("nodata", "NoData value (all bands)", "GPDouble", value=0)
+        p_exp = _param("expand_grey",
+                       "Expand single-band greyscale inputs to three bands when the "
+                       "other inputs are RGB", "GPBoolean", value=True)
         return [p_vis, p_ras, p_fc, p_code, p_grp, p_pre, p_out, p_sr, p_tr,
-                p_cs, p_rs, p_nd]
+                p_cs, p_rs, p_nd, p_exp]
 
     def updateParameters(self, params):
         # Transformations are listed for cartogram CRS -> output CRS; the
@@ -833,6 +881,7 @@ class MosaicSheets(object):
             cs=float(P["cell_size"].value),
             resampling=P["resampling"].valueAsText,
             nodata=_num(P["nodata"].value),
+            expand_grey=bool(P["expand_grey"].value),
         )
         run_id = "{}_mosaic_{}_{}".format(c.prefix, _safe(c.group_f), _timestamp())
         log = RunLog(os.path.join(c.out_folder, run_id + ".log"))
@@ -878,8 +927,7 @@ class MosaicSheets(object):
         for k_in, p in enumerate(inputs, 1):
             head = "{} {} |".format(_counter(k_in, n_in), os.path.basename(p).ljust(w_in))
             ras = arcpy.Raster(p)
-            kinds.setdefault((ras.pixelType, ras.bandCount), []).append(
-                os.path.basename(p))
+            kinds.setdefault((ras.pixelType, ras.bandCount), []).append(p)
             if not _same_sr(ras.spatialReference, carto_sr):
                 log.error("{} CRS {} differs from the cartogram ({})".format(
                     head, ras.spatialReference.name, carto_sr.name))
@@ -907,6 +955,28 @@ class MosaicSheets(object):
                     _counter(i, len(conflicts)), k.ljust(w_code), len(v),
                     ", ".join(sorted(os.path.basename(x[0]) for x in v))))
 
+        # ---- Single-band greyscale among RGB: expand to three bands -------
+        # Only when every other input has three bands of the same pixel type
+        # and the single-band rasters carry no colour table (palette rasters
+        # would need their colour table applied, not their index repeated).
+        expand = set()
+        if c.expand_grey and len(kinds) == 2:
+            (pt_a, nb_a), (pt_b, nb_b) = sorted(kinds)
+            if pt_a == pt_b and {nb_a, nb_b} == {1, 3}:
+                singles = kinds[(pt_a, 1)]
+                not_grey = [p for p in singles if _has_colour_table(p) is not False]
+                names = ", ".join(sorted(os.path.basename(p) for p in singles))
+                if not_grey:
+                    log.error("Single-band rasters with a colour table, or not readable "
+                              "by GDAL, are not expanded to three bands: {}".format(
+                                  ", ".join(sorted(os.path.basename(p) for p in not_grey))))
+                else:
+                    expand = set(singles)
+                    kinds = {(pt_a, 3): kinds[(pt_a, 3)] + singles}
+                    log.info("Single-band greyscale rasters to be expanded to three bands "
+                             "(band repeated, no resampling): {}: {}".format(
+                                 len(singles), names))
+
         # ---- Pixel type, band count and NoData shared by all inputs -------
         pixel_type, n_bands = "", 0
         if len(kinds) > 1:
@@ -919,7 +989,8 @@ class MosaicSheets(object):
                               "(most frequent)".format(nb, pt, len(names)))
                 else:       # the others: every raster, so they can be found
                     log.error("  {} band(s), pixel type {}: {} raster(s): {}".format(
-                        nb, pt, len(names), ", ".join(sorted(names))))
+                        nb, pt, len(names),
+                        ", ".join(sorted(os.path.basename(x) for x in names))))
             bad += 1
         else:
             (pt, n_bands), = kinds
@@ -979,6 +1050,7 @@ class MosaicSheets(object):
         w_name = _width(out_names.values())
         w_cnt = _width([str(len(v)) for v in groups.values()])
         nodata_spec = ";".join("{} {}".format(b, c.nodata) for b in range(1, n_bands + 1))
+        scratch = getattr(arcpy.env, "scratchFolder", None) or c.out_folder
 
         log_rows = []
         arcpy.SetProgressor("step", "Mosaicking...", 0, n, 1)
@@ -1021,10 +1093,30 @@ class MosaicSheets(object):
                                overwriteOutput=False)
                     if trans:
                         env["geographicTransformations"] = trans
-                    with arcpy.EnvManager(**env):
-                        arcpy.management.MosaicToNewRaster(
-                            ";".join(src), c.out_folder, name, c.out_sr,
-                            pixel_type, cs, n_bands, "LAST", "FIRST")
+                    # Temporary three-band copies of greyscale members, made in
+                    # the native CRS before the projecting environment is set
+                    tmp, mosaic_src = [], []
+                    try:
+                        for p in src:
+                            if p in expand:
+                                q = os.path.join(scratch, "msm_rgb_{}.tif".format(
+                                    os.path.splitext(os.path.basename(p))[0]))
+                                _expand_to_rgb(p, q, c.nodata)
+                                tmp.append(q)
+                                mosaic_src.append(q)
+                            else:
+                                mosaic_src.append(p)
+                        with arcpy.EnvManager(**env):
+                            arcpy.management.MosaicToNewRaster(
+                                ";".join(mosaic_src), c.out_folder, name, c.out_sr,
+                                pixel_type, cs, n_bands, "LAST", "FIRST")
+                    finally:
+                        for q in tmp:
+                            if arcpy.Exists(q):
+                                arcpy.management.Delete(q)
+                    if tmp:
+                        _add_note(rec, "expanded to 3 bands: {}".format(" ".join(
+                            sorted(os.path.basename(p) for p in src if p in expand))))
                     arcpy.management.SetRasterProperties(out_path, nodata=nodata_spec)
                     arcpy.management.CalculateStatistics(out_path)
                     arcpy.management.BuildPyramids(out_path, -1, "NONE", c.resampling)
@@ -1032,8 +1124,9 @@ class MosaicSheets(object):
                     oe = arcpy.Raster(out_path).extent
                     off = [abs(v / cs - round(v / cs)) for v in (oe.XMin, oe.YMax)]
                     if max(off) > 1e-3:
-                        rec["notes"] = "grid not aligned to multiples of the cell size {}".format(cs)
-                        log.warn("{} {}".format(head, rec["notes"]))
+                        msg = "grid not aligned to multiples of the cell size {}".format(cs)
+                        _add_note(rec, msg)
+                        log.warn("{} {}".format(head, msg))
                     rec["state"] = "OK"
                 if absent:
                     log.warn("{} {} of {} sheets missing".format(
