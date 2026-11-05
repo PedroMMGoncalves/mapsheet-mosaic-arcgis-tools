@@ -1,0 +1,41 @@
+# Citation metadata for Map Sheet Mosaic. Renders as "Cite this repository"
+# in the GitHub sidebar. Add a DOI under `identifiers:` once a release is
+# archived (e.g. on Zenodo).
+
+cff-version: 1.2.0
+message: "If you use Map Sheet Mosaic in your work, please cite it as below."
+title: "Map Sheet Mosaic: collar removal and map-level mosaicking of scanned map sheets for ArcGIS Pro"
+abstract: >
+  Map Sheet Mosaic is an ArcGIS Pro Python toolbox for archives of scanned,
+  georeferenced map sheets. Tool 1 identifies the sheet covered by each
+  raster from its georeferencing (largest area of overlap with the sheet
+  polygons of a cartogram), clips the collar with the sheet polygon while
+  preserving the source cell grid, and renames the result by sheet code,
+  reporting coverage, duplicate scans and pixels coinciding with the NoData
+  value. Tool 2 mosaics an operator-selected copy of each sheet, grouped by
+  any cartogram attribute, directly into the target coordinate system with
+  an explicit datum transformation, so that projection and mosaicking share
+  a single resampling step on a grid snapped to multiples of the cell size.
+  Every run writes a timestamped CSV report and a fixed-width log.
+type: software
+version: "0.1.0"
+date-released: "2026-11-05"
+license: Apache-2.0
+authors:
+  - family-names: "Gonçalves"
+    given-names: "Pedro"
+    affiliation: "Laboratório Nacional de Energia e Geologia (LNEG)"
+repository-code: "https://github.com/PedroMMGoncalves/mapsheet-mosaic-arcgis-tools"
+keywords:
+  - "arcgis pro"
+  - "python toolbox"
+  - "scanned maps"
+  - "map sheets"
+  - "historical cartography"
+  - "georeferencing"
+  - "raster clipping"
+  - "mosaicking"
+  - "datum transformation"
+  - "ntv2"
+  - "pt-tm06"
+  - "map archives"
