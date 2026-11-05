@@ -110,11 +110,26 @@ def _fmt_dur(seconds):
     return "{}:{:02d}:{:02d}".format(seconds // 3600, (seconds % 3600) // 60, seconds % 60)
 
 
+def _counter(i, n):
+    """Zero-padded item counter of constant width, e.g. [007/254]."""
+    w = len(str(n))
+    return "[{:0{w}d}/{:0{w}d}]".format(i, n, w=w)
+
+
+def _width(names):
+    """Length of the longest string (0 for an empty sequence)."""
+    return max([len(s) for s in names] or [0])
+
+
 class RunLog(object):
     """Write messages to the Geoprocessing pane and to a .log file.
 
     The file is flushed after every line, so it survives a crash or a
     cancelled run and shows exactly how far processing went.
+
+    Column alignment: the level tag is padded to a constant width and
+    callers pad names to the longest name of the run, so each line type
+    forms fixed-width columns in a monospaced viewer.
     """
 
     def __init__(self, path):
@@ -124,7 +139,7 @@ class RunLog(object):
 
     def _write(self, level, text):
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._f.write("{} [{}] {}\n".format(stamp, level, text))
+        self._f.write("{} {:<7} {}\n".format(stamp, "[" + level + "]", text))
         self._f.flush()
 
     def info(self, text):
@@ -139,12 +154,18 @@ class RunLog(object):
         self._write("ERROR", text)
         arcpy.AddError(text)
 
-    def progress(self, i, n, label, step_s):
-        """Log item i of n with its own duration, elapsed total and ETA."""
+    def progress(self, i, n, label, step_s, note=""):
+        """Log item i of n with its own duration, elapsed total and ETA.
+
+        `label` must already be padded by the caller. `note` (free text,
+        e.g. an error message) is appended last so it cannot shift the
+        fixed-width columns.
+        """
         elapsed = time.perf_counter() - self.t0
         eta = elapsed / i * (n - i) if i else 0.0
-        self.info("[{}/{}] {} | {:.1f} s | elapsed {} | ETA {}".format(
-            i, n, label, step_s, _fmt_dur(elapsed), _fmt_dur(eta)))
+        line = "{} {} | {:>6.1f} s | elapsed {:>8} | ETA {:>8}".format(
+            _counter(i, n), label, step_s, _fmt_dur(elapsed), _fmt_dur(eta))
+        self.info(line + (" | " + note if note else ""))
 
     def close(self):
         self.info("Total time: {} | log: {}".format(
@@ -358,9 +379,12 @@ class ClipSheets(object):
         # ---- Pass 1: identify sheets and plan names (no writing) ----------
         t_pass1 = time.perf_counter()
         rows, used_names = [], set()
-        arcpy.SetProgressor("step", "Identifying sheets...", 0, len(rasters), 1)
-        for path in rasters:
+        n_ras = len(rasters)
+        w_in = _width([os.path.basename(p) for p in rasters])
+        arcpy.SetProgressor("step", "Identifying sheets...", 0, n_ras, 1)
+        for k_ras, path in enumerate(rasters, 1):
             fname = os.path.basename(path)
+            head = "{} {} |".format(_counter(k_ras, n_ras), fname.ljust(w_in))
             stem = os.path.splitext(fname)[0]
             m = vrx.match(stem)
             variant = _safe(m.group("var")) if m else _safe(stem)
@@ -375,14 +399,14 @@ class ClipSheets(object):
                 row["cell_y"] = "{:.4f}".format(ras.meanCellHeight)
                 if not _same_sr(ras.spatialReference, carto_sr):
                     row["state"] = "CRS_MISMATCH"
-                    log.warn("{}: CRS mismatch ({})".format(fname, ras.spatialReference.name))
+                    log.warn("{} CRS mismatch ({})".format(head, ras.spatialReference.name))
                     rows.append(row)
                     arcpy.SetProgressorPosition()
                     continue
                 sheet, cov = _best_sheet(_footprint(ras), sheets)
                 if sheet is None:
                     row["state"] = "NO_SHEET"
-                    log.warn("{}: does not intersect any cartogram sheet".format(fname))
+                    log.warn("{} does not intersect any cartogram sheet".format(head))
                     rows.append(row)
                     arcpy.SetProgressorPosition()
                     continue
@@ -390,8 +414,8 @@ class ClipSheets(object):
                            sheet_50k=sheet["f50"], coverage_pct="{:.2f}".format(cov))
                 row["state"] = "OK" if cov >= min_cov else "LOW_COVERAGE"
                 if row["state"] == "LOW_COVERAGE":
-                    log.warn("{}: coverage {:.1f}% of sheet {}".format(
-                        fname, cov, sheet["code"]))
+                    log.warn("{} coverage {:>5.1f} % of sheet {}".format(
+                        head, cov, sheet["code"]))
                 base = "{}_{}".format(prefix, _safe(sheet["code"]))
                 name, k = base, 0
                 while name.lower() in used_names:  # in-run collision -> _dupN
@@ -404,7 +428,7 @@ class ClipSheets(object):
             except Exception as exc:  # keep going; the CSV records the failure
                 row["state"] = "ERROR"
                 row["notes"] = str(exc)[:200]
-                log.warn("{}: identification error: {}".format(fname, exc))
+                log.warn("{} identification error: {}".format(head, exc))
             rows.append(row)
             arcpy.SetProgressorPosition()
         log.info("Identification completed in {}".format(
@@ -423,6 +447,8 @@ class ClipSheets(object):
         if not dry_run:
             todo = [r for r in rows if "_sheet" in r]
             n = len(todo)
+            w_src = _width([r["original_file"] for r in todo])
+            w_dst = _width([r["output_name"] for r in todo])
             log.info("Clipping {} rasters...".format(n))
             t_pass2 = time.perf_counter()
             arcpy.SetProgressor("step", "Clipping...", 0, n, 1)
@@ -432,6 +458,9 @@ class ClipSheets(object):
                                   overwriteOutput=False):
                 for i, r in enumerate(todo, 1):
                     t_item = time.perf_counter()
+                    names = "{} -> {}".format(r["original_file"].ljust(w_src),
+                                              r["output_name"].ljust(w_dst))
+                    note = ""
                     try:
                         if check_zero:
                             t = time.perf_counter()
@@ -442,8 +471,8 @@ class ClipSheets(object):
                             if n0 == -1:
                                 r["notes"] = (r["notes"] + "; fewer than 3 bands").strip("; ")
                             elif n0 > 0:
-                                log.warn("{}: {} RGB=0 pixels become NoData".format(
-                                    r["original_file"], n0))
+                                log.warn("{} {} | {} RGB=0 pixels become NoData".format(
+                                    _counter(i, n), names, n0))
                         if arcpy.Exists(r["output_path"]):
                             r["notes"] = (r["notes"] + "; output exists, not rewritten").strip("; ")
                             status = "EXISTS"
@@ -456,11 +485,10 @@ class ClipSheets(object):
                         r["state"] = "ERROR"
                         r["use"] = "0"
                         r["notes"] = (r["notes"] + "; " + str(exc)[:200]).strip("; ")
-                        status = "ERROR: {}".format(str(exc)[:120])
-                    log.progress(i, n, "{} -> {} | {} | zero {} s | clip {} s".format(
-                        r["original_file"], r["output_name"], status,
-                        r["t_zero_s"] or "-", r["t_clip_s"] or "-"),
-                        time.perf_counter() - t_item)
+                        status, note = "ERROR", str(exc)[:120]
+                    log.progress(i, n, "{} | {:<6} | zero {:>6} s | clip {:>6} s".format(
+                        names, status, r["t_zero_s"] or "-", r["t_clip_s"] or "-"),
+                        time.perf_counter() - t_item, note)
                     arcpy.SetProgressorPosition()
             if arcpy.Exists(TMP_CLIP_FC):
                 arcpy.management.Delete(TMP_CLIP_FC)
@@ -652,17 +680,19 @@ class MosaicSheets(object):
         carto_sr, sheets = _load_cartogram(fc, code_f, f25_f, f50_f)
         key_attr = self.GROUP_KEYS[group_name][0]
         per_sheet, bad = {}, 0
-        for p in inputs:
-            name = os.path.basename(p)
+        n_in = len(inputs)
+        w_in = _width([os.path.basename(p) for p in inputs])
+        for k_in, p in enumerate(inputs, 1):
+            head = "{} {} |".format(_counter(k_in, n_in), os.path.basename(p).ljust(w_in))
             ras = arcpy.Raster(p)
             if not _same_sr(ras.spatialReference, carto_sr):
-                log.error("{}: CRS {} differs from the cartogram ({})".format(
-                    name, ras.spatialReference.name, carto_sr.name))
+                log.error("{} CRS {} differs from the cartogram ({})".format(
+                    head, ras.spatialReference.name, carto_sr.name))
                 bad += 1
                 continue
             sheet, cov = _best_sheet(_footprint(ras), sheets)
             if sheet is None:
-                log.error("{}: does not intersect any sheet".format(name))
+                log.error("{} does not intersect any sheet".format(head))
                 bad += 1
                 continue
             per_sheet.setdefault(sheet["code"], []).append((p, sheet))
@@ -698,6 +728,10 @@ class MosaicSheets(object):
             expected.setdefault(s[key_attr], set()).add(s["code"])
         n = len(groups)
         log.info("Maps to mosaic: {}".format(n))
+        out_names = {key: "{}_{}_{}.tif".format(prefix, scale_tag, _safe(key))
+                     for key in groups}
+        w_name = _width(out_names.values())
+        w_cnt = _width([str(len(v)) for v in groups.values()])
 
         log_rows = []
         arcpy.SetProgressor("step", "Mosaicking...", 0, n, 1)
@@ -705,7 +739,8 @@ class MosaicSheets(object):
             t_item = time.perf_counter()
             members = sorted(groups[key])
             src = [p for _c, p in members]
-            name = "{}_{}_{}.tif".format(prefix, scale_tag, _safe(key))
+            name = out_names[key]
+            head = "{} {} |".format(_counter(i, n), name.ljust(w_name))
             out_path = os.path.join(out_folder, name)
             present = {c for c, _p in members}
             absent = sorted(expected.get(key, set()) - present)
@@ -749,18 +784,18 @@ class MosaicSheets(object):
                     off = [abs(v / cs - round(v / cs)) for v in (oe.XMin, oe.YMax)]
                     if max(off) > 1e-3:
                         rec["notes"] = "grid not aligned to multiples of {} m".format(cs)
-                        log.warn("{}: {}".format(name, rec["notes"]))
+                        log.warn("{} {}".format(head, rec["notes"]))
                     rec["state"] = "OK"
                 if absent:
-                    log.warn("{}: {} of {} sheets missing".format(
-                        name, len(absent), len(expected.get(key, ()))))
+                    log.warn("{} {} of {} sheets missing".format(
+                        head, len(absent), len(expected.get(key, ()))))
             except Exception as exc:
                 rec["state"], rec["notes"] = "ERROR", str(exc)[:200]
-                log.warn("{}: {}".format(name, exc))
+                log.warn("{} {}".format(head, exc))
             dt = time.perf_counter() - t_item
             rec["t_mosaic_s"] = "{:.1f}".format(dt)
-            log.progress(i, n, "{} | {} sheets | {}".format(
-                name, len(members), rec["state"]), dt)
+            log.progress(i, n, "{} | {:>{w}} sheets | {:<6}".format(
+                name.ljust(w_name), len(members), rec["state"], w=w_cnt), dt)
             log_rows.append(rec)
             arcpy.SetProgressorPosition()
 
