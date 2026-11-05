@@ -87,6 +87,27 @@ def test_identification_naming_states_and_use(tbx, fake, collection):
     assert rows["O_+0-160_MAG.TIF"]["n_pix_nodata"] == "0"
 
 
+def test_copies_per_sheet_column_and_summary(tbx, fake, collection):
+    _run(tbx, collection, dry_run=True)
+    rows = {r["original_file"]: r for r in read_csv(latest(collection.out, "MAG_plan_*.csv"))}
+    assert rows["O_+0-160_MAG.TIF"]["n_copies"] == "3"
+    assert rows["O_+0-162_MAG.tiff"]["n_copies"] == "1"      # LOW_COVERAGE counts
+    assert rows["O_+2-160_MAG.TIF"]["n_copies"] == "1"
+    assert rows["O_+9-999_MAG.TIF"]["n_copies"] == ""        # NO_SHEET
+    warns = [t for lv, t in fake.MESSAGES if lv == "WARN"]
+    assert any(t.startswith("Sheets with more than one copy: 2") for t in warns)
+    line = [t for t in warns if t.startswith("[1/2] 51B60925 | 3 copies | ")]
+    assert line and "MAG_51B60925_dup1.tif [MAG2, cell 0.4230 m, 3 band(s)]" in line[0]
+    assert any(t.startswith("[2/2] 51B61002 | 2 copies | ") for t in warns)
+
+
+def test_summary_counts_copies_after_clipping(tbx, fake, collection):
+    _run(tbx, collection)   # the failing clip of 51B61002_dup1 leaves one copy
+    warns = [t for lv, t in fake.MESSAGES if lv == "WARN"]
+    assert any(t.startswith("Sheets with more than one copy: 1") for t in warns)
+    assert not any("51B61002 |" in t for t in warns)
+
+
 def test_clip_keeps_source_grid_and_uses_nodata(tbx, fake, collection):
     _run(tbx, collection, nodata=0)
     clips = calls(fake, "Clip")

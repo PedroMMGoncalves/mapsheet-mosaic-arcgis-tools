@@ -121,14 +121,24 @@ def test_two_copies_of_a_sheet_stop_the_run(tbx, fake, clipped):
     fake.LAYERS[1].visible = True       # group with the _dup1 copy switched on
     _mosaic(tbx, clipped)
     assert not calls(fake, "MosaicToNewRaster")
-    assert any("Sheet 51B60925 has 2 rasters" in t for t in _errors(fake))
+    errors = _errors(fake)
+    assert any("Only one raster per cartogram sheet is allowed" in t
+               and t.endswith(": 1") for t in errors)
+    assert any(t.startswith("[1/1] 51B60925 | 2 rasters | MAG_51B60925.tif, "
+                            "MAG_51B60925_dup1.tif") for t in errors), errors
+    assert "switch off all but one copy" in errors[-1]
 
 
 def test_mixed_band_count_stops_the_run(tbx, fake, clipped):
     fake.RASTERS[os.path.join(clipped.out, "MAG_51B61001.tif")]["bands"] = 1
     _mosaic(tbx, clipped)
     assert not calls(fake, "MosaicToNewRaster")
-    assert any("share pixel type and band count" in t for t in _errors(fake))
+    errors = _errors(fake)
+    assert any("share pixel type and band count" in t for t in errors)
+    # the deviating raster is named; the most frequent combination is counted
+    assert "  1 band(s), pixel type U8: 1 raster(s): MAG_51B61001.tif" in errors
+    assert "  3 band(s), pixel type U8: 3 raster(s) (most frequent)" in errors
+    assert "convert the rasters listed" in errors[-1]
 
 
 def test_crs_mismatch_in_extra_rasters_stops_the_run(tbx, fake, clipped):

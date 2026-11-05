@@ -138,8 +138,12 @@ neat line receive the NoData value in every band.
 
 Duplicate scans are frequent in map archives and differ in tone, contrast and
 condition. Selecting a copy is a judgement on image quality, so it is left to
-the operator. Tool 1 sets `use = 1` only for sheets with a single copy and
-state `OK`, as a guide; Tool 2 accepts exactly one raster per sheet.
+the operator. Tool 1 records the number of copies of each sheet (`n_copies`),
+sets `use = 1` only for sheets with a single copy and state `OK`, and ends its
+log with the list of sheets that have more than one copy, giving for each copy
+its output name, variant, cell size and band count. Tool 2 accepts exactly one
+raster per cartogram sheet: when a sheet has more than one, it lists every such
+sheet with its rasters and writes nothing.
 
 ### Projection and mosaicking with a single resampling
 
@@ -326,6 +330,7 @@ made to an earlier CSV are never overwritten.
 | `n_pix_nodata` | Pixels equal to the NoData value in at least one band (when the check is on) |
 | `output_name`, `output_path` | Planned or written output |
 | `state` | See below |
+| `n_copies` | Number of copies of the sheet in the run (rasters in state `OK` or `LOW_COVERAGE`) |
 | `use` | 1 for sheets with a single copy and state `OK`, else 0 |
 | `t_check_s`, `t_clip_s` | Durations of the pixel check and of the clip, s |
 | `notes` | Free-text details (unmatched name, existing output, error message) |
@@ -467,7 +472,8 @@ scope of the suite and is validated in ArcGIS Pro.
 | `NO_SHEET` | Raster outside the cartogram, or not georeferenced (pixel coordinates) | Check the georeferencing of the raster |
 | `LOW_COVERAGE` | Partial scan, georeferencing error, or raster straddling two sheets | Inspect `coverage_pct` and the raster against the cartogram; adjust *Minimum sheet coverage* if partial sheets are expected |
 | Warning `pixels equal to NoData` | Image pixels (e.g. black ink) carry the NoData value | Choose a NoData value absent from the data (see band minima in the raster statistics) and run again into a new output folder |
-| Tool 2: `Sheet ... has N rasters` | More than one copy of a sheet visible or listed | Switch off the extra copies (a layer counts as visible only if all its parent group layers are on) |
+| Tool 2: `Only one raster per cartogram sheet is allowed` | More than one copy of a sheet visible or listed; the sheets and their rasters are listed below the message | Switch off all but one copy of each listed sheet (a layer counts as visible only if all its parent group layers are on); the end of the Tool 1 log lists the same sheets with variant and cell size of each copy |
+| Tool 2: `All inputs must share pixel type and band count` | Inputs mix, e.g., single-band greyscale scans with three-band RGB scans; the deviating rasters are listed | Switch off the listed rasters, or convert them: a greyscale raster becomes an equivalent three-band raster with *Composite Bands* using its band three times (values copied, no resampling); then switch off the single-band original. Check the `bands` column of the Tool 1 CSV |
 | Tool 2: visible layers reported as ignored | File names do not start with `PREFIX_` | Use the prefix of Tool 1, or list the rasters under *Additional rasters* |
 | Tool 2: `Datums differ ... and no transformation is available`, or no NTv2 option in the list | `ListTransformations` returns no (grid) transformation for the coordinate system pair | Install the *ArcGIS Coordinate Systems Data* grids, or register the Portuguese NTv2 grid as a custom geographic transformation (see [Datum transformation](#datum-transformation-ntv2-grids-for-portugal)); the list accepts only names returned by `ListTransformations` |
 | Tool 2: `grid not aligned to multiples of the cell size` | Extent environment not honoured by the geoprocessing tool | The mosaic is valid but off the common grid; report the case with the `.log` |

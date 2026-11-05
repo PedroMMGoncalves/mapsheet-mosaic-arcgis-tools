@@ -123,9 +123,10 @@ CSV_DELIM = ";"  # list separator of spreadsheet software in decimal-comma local
 CLIP_CSV_HEAD = ["prefix", "original_file", "original_path", "code"]
 CLIP_CSV_TAIL = [
     "variant", "coverage_pct", "cell_x", "cell_y", "bands", "pixel_type",
-    "n_pix_nodata", "output_name", "output_path", "state", "use",
+    "n_pix_nodata", "output_name", "output_path", "state", "n_copies", "use",
     "t_check_s", "t_clip_s", "notes",
 ]
+COPY_STATES = ("OK", "LOW_COVERAGE")  # states that count as a usable copy of a sheet
 MOSAIC_CSV_COLUMNS = [
     "group_field", "group_value", "n_sheets", "codes", "missing", "rasters",
     "output_path", "pixel_type", "bands", "transformation", "cell_size",
@@ -613,10 +614,12 @@ class ClipSheets(object):
         log.info("Identification completed in {}".format(
             _fmt_dur(time.perf_counter() - t_pass1)))
 
-        # ---- `use`: 1 only for single-copy sheets with good coverage ------
+        # ---- Copies per sheet; `use` = 1 only for single-copy sheets OK --
         per_code = collections.Counter(
-            r["code"] for r in rows if r["code"] and r["state"] in ("OK", "LOW_COVERAGE"))
+            r["code"] for r in rows if r["code"] and r["state"] in COPY_STATES)
         for r in rows:
+            if r["code"] and r["state"] in COPY_STATES:
+                r["n_copies"] = str(per_code[r["code"]])
             if r["code"] and r["state"] == "OK" and per_code[r["code"]] == 1:
                 r["use"] = "1"
 
@@ -682,10 +685,27 @@ class ClipSheets(object):
 
         # ---- Summary -------------------------------------------------------
         states = collections.Counter(r["state"] for r in rows)
-        n_dup = sum(1 for v in per_code.values() if v > 1)
         log.info("States: " + ", ".join(
             "{}={}".format(k, v) for k, v in sorted(states.items())))
-        log.info("Sheets with more than one copy (use=0, to review): {}".format(n_dup))
+        # Tool 2 accepts one raster per cartogram sheet: list every sheet
+        # that has several usable copies, with the data needed to choose.
+        copies = collections.defaultdict(list)
+        for r in rows:
+            if r["code"] and r["state"] in COPY_STATES:
+                copies[r["code"]].append(r)
+        dups = sorted(k for k, v in copies.items() if len(v) > 1)
+        if dups:
+            log.warn("Sheets with more than one copy: {} (use=0). Tool 2 accepts one "
+                     "raster per sheet: keep one copy of each sheet below.".format(len(dups)))
+            w_code = _width(dups)
+            for i, code in enumerate(dups, 1):
+                log.warn("{} {} | {} copies | {}".format(
+                    _counter(i, len(dups)), code.ljust(w_code), len(copies[code]),
+                    ", ".join("{} [{}, cell {} m, {} band(s)]".format(
+                        r["output_name"], r["variant"], r["cell_x"], r["bands"])
+                        for r in copies[code])))
+        else:
+            log.info("Sheets with more than one copy: 0")
         log.info("CSV: {}".format(csv_path))
 
 
@@ -876,18 +896,30 @@ class MosaicSheets(object):
                 bad += 1
                 continue
             per_sheet.setdefault(sheet["code"], []).append((p, sheet))
+        # ---- One raster per cartogram sheet (safeguard) -------------------
         conflicts = {k: v for k, v in per_sheet.items() if len(v) > 1}
-        for k, v in sorted(conflicts.items()):
-            log.error("Sheet {} has {} rasters: {}".format(
-                k, len(v), ", ".join(os.path.basename(x[0]) for x in v)))
+        if conflicts:
+            log.error("Only one raster per cartogram sheet is allowed. Sheets with "
+                      "more than one raster: {}".format(len(conflicts)))
+            w_code = _width(conflicts)
+            for i, (k, v) in enumerate(sorted(conflicts.items()), 1):
+                log.error("{} {} | {} rasters | {}".format(
+                    _counter(i, len(conflicts)), k.ljust(w_code), len(v),
+                    ", ".join(sorted(os.path.basename(x[0]) for x in v))))
 
         # ---- Pixel type, band count and NoData shared by all inputs -------
         pixel_type, n_bands = "", 0
         if len(kinds) > 1:
-            for (pt, nb), names in sorted(kinds.items()):
-                log.error("Pixel type {}, {} band(s): {} raster(s), e.g. {}".format(
-                    pt, nb, len(names), names[0]))
-            log.error("All inputs must share pixel type and band count.")
+            log.error("All inputs must share pixel type and band count. "
+                      "Combinations found: {}".format(len(kinds)))
+            ordered = sorted(kinds.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+            for j, ((pt, nb), names) in enumerate(ordered):
+                if j == 0:  # most frequent combination: count only
+                    log.error("  {} band(s), pixel type {}: {} raster(s) "
+                              "(most frequent)".format(nb, pt, len(names)))
+                else:       # the others: every raster, so they can be found
+                    log.error("  {} band(s), pixel type {}: {} raster(s): {}".format(
+                        nb, pt, len(names), ", ".join(sorted(names))))
             bad += 1
         else:
             (pt, n_bands), = kinds
@@ -901,8 +933,14 @@ class MosaicSheets(object):
             else:
                 pixel_type = PIXEL_TYPES[pt][0]
         if bad or conflicts:
-            log.error("Correct the input selection (e.g. switch off extra copies "
-                      "in the map) and run again.")
+            hints = []
+            if conflicts:
+                hints.append("switch off all but one copy of each sheet listed")
+            if len(kinds) > 1:
+                hints.append("switch off or convert the rasters listed with a "
+                             "different band count or pixel type")
+            log.error("Nothing was written. Correct the input selection{} and run "
+                      "again.".format(" (" + "; ".join(hints) + ")" if hints else ""))
             return
         log.info("Pixel type {} | bands {}".format(pixel_type, n_bands))
 

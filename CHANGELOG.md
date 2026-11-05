@@ -5,6 +5,23 @@ versioning follows [Semantic Versioning](https://semver.org/). `TOOLBOX_VERSION`
 [`MapSheetMosaic.pyt`](MapSheetMosaic.pyt) tracks the same value as `version:` in
 [`CITATION.cff`](CITATION.cff).
 
+## [Unreleased]
+
+### Added
+
+- Tool 1: CSV column `n_copies` (copies of the sheet in the run) and, at the end of the
+  log, the list of sheets with more than one copy, giving output name, variant, cell
+  size and band count of each copy.
+
+### Changed
+
+- Tool 2: the one-raster-per-sheet safeguard is reported as a dedicated block
+  (`Only one raster per cartogram sheet is allowed`) listing every affected sheet with
+  its rasters, in fixed-width columns.
+- Tool 2: when inputs differ in pixel type or band count, every raster outside the most
+  frequent combination is named (previously one example per combination).
+- Tool 2: the final message states that nothing was written and which corrections apply.
+
 ## [0.1.0] - 2026-11-05
 
 First public version. Tool 1 in its original form was validated in ArcGIS Pro on
