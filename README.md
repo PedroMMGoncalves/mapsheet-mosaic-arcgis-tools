@@ -410,9 +410,12 @@ geometry to rectangles and records geoprocessing calls.
 python -m pytest
 ```
 
-Each push and pull request runs `py_compile` and the suite on Python 3.9,
-3.11 and 3.13 (the range bundled with ArcGIS Pro 3.x) through the
-[CI workflow](.github/workflows/ci.yml). Raster-level behaviour of the
+Each push and pull request runs `py_compile` and the suite on Python 3.11,
+3.12 and 3.13 through the [CI workflow](.github/workflows/ci.yml). The 3.9+
+shown in the badge is the supported floor (the interpreter of ArcGIS Pro 3.0);
+since hosted runners no longer provide Python 3.9, compatibility with it is
+checked at grammar level with `ast.parse(..., feature_version=(3, 9))`.
+Raster-level behaviour of the
 geoprocessing tools (resampling, compression, NoData writing) is outside the
 scope of the suite and is validated in ArcGIS Pro.
 

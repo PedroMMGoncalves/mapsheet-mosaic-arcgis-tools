@@ -1,10 +1,11 @@
 name: CI
 
 # Two jobs:
-#   syntax-check  py_compile of the toolbox across the Python versions
-#                 bundled with ArcGIS Pro 3.x (3.9 in Pro 3.0 to 3.13 in
-#                 current releases). py_compile does not execute
-#                 imports, so arcpy is not needed.
+#   syntax-check  py_compile of the toolbox on current interpreters, plus a
+#                 grammar check against Python 3.9 (the interpreter of
+#                 ArcGIS Pro 3.0), done with ast.parse(feature_version)
+#                 because hosted runners no longer provide 3.9.
+#                 Neither step executes imports, so arcpy is not needed.
 #   unit-tests    pytest against the suite under tests/. The suite
 #                 installs a stand-in for arcpy (tests/arcpy_stub.py), so
 #                 it runs on a stock runner.
@@ -29,8 +30,9 @@ jobs:
   syntax-check:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
@@ -41,12 +43,17 @@ jobs:
         run: |
           python -m py_compile MapSheetMosaic.pyt
           echo "py_compile OK on Python ${{ matrix.python-version }}"
+      - name: Python 3.9 grammar (ArcGIS Pro 3.0)
+        run: |
+          python -c "import ast; ast.parse(open('MapSheetMosaic.pyt', encoding='utf-8').read(), feature_version=(3, 9))"
+          echo "Python 3.9 grammar OK"
 
   unit-tests:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}

@@ -35,7 +35,8 @@ in ArcGIS Pro (see *Validation status* in the README).
   the run, right-aligned durations, elapsed time and ETA; free-text notes appended
   last. The first line records the toolbox version.
 - **Regression suite** (`tests/`, pytest) with a stand-in for `arcpy`, and a CI
-  workflow running it on Python 3.9, 3.11 and 3.13.
+  workflow running it on Python 3.11, 3.12 and 3.13, with a Python 3.9
+  grammar check of the toolbox (ArcGIS Pro 3.0).
 
 ### Changed (relative to the internal version)
 
