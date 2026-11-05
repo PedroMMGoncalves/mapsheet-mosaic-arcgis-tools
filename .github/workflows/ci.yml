@@ -1,0 +1,61 @@
+name: CI
+
+# Two jobs:
+#   syntax-check  py_compile of the toolbox across the Python versions
+#                 bundled with ArcGIS Pro 3.x (3.9 in Pro 3.0 to 3.13 in
+#                 current releases). py_compile does not execute
+#                 imports, so arcpy is not needed.
+#   unit-tests    pytest against the suite under tests/. The suite
+#                 installs a stand-in for arcpy (tests/arcpy_stub.py), so
+#                 it runs on a stock runner.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "MapSheetMosaic.pyt"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+      - "pytest.ini"
+  pull_request:
+    paths:
+      - "MapSheetMosaic.pyt"
+      - "tests/**"
+      - ".github/workflows/ci.yml"
+      - "pytest.ini"
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: py_compile MapSheetMosaic.pyt
+        run: |
+          python -m py_compile MapSheetMosaic.pyt
+          echo "py_compile OK on Python ${{ matrix.python-version }}"
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # numpy is the only runtime dependency besides arcpy
+          python -m pip install pytest numpy
+      - name: pytest
+        run: python -m pytest -q

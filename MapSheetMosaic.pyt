@@ -116,6 +116,8 @@ import arcpy
 import numpy as np
 
 
+TOOLBOX_VERSION = "0.1.0"  # same value as `version:` in CITATION.cff
+
 CSV_DELIM = ";"  # list separator of spreadsheet software in decimal-comma locales
 # Tool 1 CSV: these columns, with the selected cartogram fields in between
 CLIP_CSV_HEAD = ["prefix", "original_file", "original_path", "code"]
@@ -515,7 +517,8 @@ class ClipSheets(object):
         run_id = "{}_{}_{}".format(c.prefix, tag, _timestamp())
         log = RunLog(os.path.join(c.out_folder, run_id + ".log"))
         try:
-            log.info("Tool: 1. Clip and Rename Sheets | dry run={}".format(c.dry_run))
+            log.info("Tool: 1. Clip and Rename Sheets | Map Sheet Mosaic {} | dry run={}".format(
+                TOOLBOX_VERSION, c.dry_run))
             log.info("Input: {} (subfolders={}, extensions {}) | output: {}".format(
                 c.in_folder, c.recursive, " ".join(c.exts), c.out_folder))
             log.info("Cartogram: {} | code field {} | CSV fields: {} | NoData {}".format(
@@ -814,7 +817,8 @@ class MosaicSheets(object):
         run_id = "{}_mosaic_{}_{}".format(c.prefix, _safe(c.group_f), _timestamp())
         log = RunLog(os.path.join(c.out_folder, run_id + ".log"))
         try:
-            log.info("Tool: 2. Mosaic Sheets by Map | group by field {}".format(c.group_f))
+            log.info("Tool: 2. Mosaic Sheets by Map | Map Sheet Mosaic {} | group by field {}".format(
+                TOOLBOX_VERSION, c.group_f))
             log.info("Output CRS: {} | transformation: {} | cell: {} | {} | NoData {}".format(
                 c.out_sr.name, c.trans or "-", c.cs, c.resampling, c.nodata))
             self._run(log, run_id, c)
