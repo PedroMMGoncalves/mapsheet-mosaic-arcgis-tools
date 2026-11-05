@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# Tool metadata written by ArcGIS Pro next to the toolbox
+*.pyt.xml
+
+# Run outputs, if an output folder is placed inside the repository
+*.log
+*.csv
+*.tif
+*.tiff
+*.ovr
+*.aux.xml
