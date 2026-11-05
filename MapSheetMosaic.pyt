@@ -13,7 +13,7 @@ Workflow
 1. Tool "1. Clip and Rename Sheets" with dry-run ON -> review the CSV plan.
 2. Same tool with dry-run OFF                      -> clipped sheets + CSV.
 3. Add the clipped sheets to the map and switch off the copies you do not
-   want (the CSV `usar` column marks single-copy sheets as a guide).
+   want (the CSV `use` column marks single-copy sheets as a guide).
 4. Tool "2. Mosaic Sheets by Map"                 -> one mosaic per map.
 
 Dependencies
@@ -42,7 +42,7 @@ Design decisions
 Methodological limitations
 --------------------------
 - Footprint = axis-aligned raster extent. For rectified scans this includes
-  the NoData corners, so `cobertura_pct` can overestimate real coverage.
+  the NoData corners, so `coverage_pct` can overestimate real coverage.
 - The zero-pixel check reads the sheet window into memory (about 70 MB per
   sheet at 0.42 m). It assumes north-up rasters without geotransform rotation.
 - Mosaic cell size is fixed (default 0.4 m). Scans at about 240 dpi (0.53 m)
@@ -64,12 +64,12 @@ import arcpy
 import numpy as np
 
 
-CSV_DELIM = ";"  # Excel PT default; the operator edits the CSV in Excel
+CSV_DELIM = ";"  # list separator of spreadsheet software in decimal-comma locales
 CSV_COLUMNS = [
-    "prefixo", "ficheiro_original", "caminho_original", "codigo",
-    "folha_25k", "folha_50k", "variante", "cobertura_pct",
-    "cell_x", "cell_y", "n_pix_rgb_zero", "nome_saida", "caminho_saida",
-    "estado", "usar", "t_zero_s", "t_clip_s", "obs",
+    "prefix", "original_file", "original_path", "code",
+    "sheet_25k", "sheet_50k", "variant", "coverage_pct",
+    "cell_x", "cell_y", "n_pix_rgb_zero", "output_name", "output_path",
+    "state", "use", "t_zero_s", "t_clip_s", "notes",
 ]
 DEFAULT_VARIANT_REGEX = r"^[^_]+_[^_]+_(?P<var>.+)$"
 TMP_CLIP_FC = r"memory\clip_sheet"
@@ -143,11 +143,11 @@ class RunLog(object):
         """Log item i of n with its own duration, elapsed total and ETA."""
         elapsed = time.perf_counter() - self.t0
         eta = elapsed / i * (n - i) if i else 0.0
-        self.info("[{}/{}] {} | {:.1f} s | decorrido {} | ETA {}".format(
+        self.info("[{}/{}] {} | {:.1f} s | elapsed {} | ETA {}".format(
             i, n, label, step_s, _fmt_dur(elapsed), _fmt_dur(eta)))
 
     def close(self):
-        self.info("Tempo total: {} | log: {}".format(
+        self.info("Total time: {} | log: {}".format(
             _fmt_dur(time.perf_counter() - self.t0), self.path))
         self._f.close()
 
@@ -171,7 +171,7 @@ def _list_rasters(folder, recursive, exclude=None):
     return sorted(found, key=str.lower)
 
 
-def _load_cartograma(fc, code_f, f25, f50):
+def _load_cartogram(fc, code_f, f25, f50):
     """Read cartogram polygons and attributes into memory."""
     sr = arcpy.Describe(fc).spatialReference
     sheets = []
@@ -276,43 +276,44 @@ class ClipSheets(object):
 
     def __init__(self):
         self.label = "1. Clip and Rename Sheets"
-        self.description = ("Identifica a folha 1:5000 pela georreferenciação, "
-                            "recorta a bordadura pelo polígono do cartograma "
-                            "e grava PREFIXO_CODIGO.tif + CSV.")
+        self.description = ("Identifies the 1:5000 sheet of each raster from its "
+                            "georeferencing, clips the collar with the cartogram "
+                            "polygon and writes PREFIX_CODE.tif plus a CSV report.")
         self.canRunInBackground = False
 
     def getParameterInfo(self):
-        p_in = _param("in_folder", "Pasta de rasters", "DEFolder")
-        p_rec = _param("recursive", "Incluir subpastas", "GPBoolean", value=True)
-        p_fc = _param("cartograma", "Cartograma (polígonos 1:5000)", "GPFeatureLayer")
-        p_code = _param("code_field", "Campo de código", "Field", value="COD_50255k")
-        p_25 = _param("f25_field", "Campo folha 1:25k", "Field", value="Folha_25k")
-        p_50 = _param("f50_field", "Campo folha 1:50k", "Field", value="Folha_50k")
+        p_in = _param("in_folder", "Input raster folder", "DEFolder")
+        p_rec = _param("recursive", "Include subfolders", "GPBoolean", value=True)
+        p_fc = _param("cartogram", "Cartogram (1:5000 sheet polygons)", "GPFeatureLayer")
+        p_code = _param("code_field", "Sheet code field", "Field", value="COD_50255k")
+        p_25 = _param("f25_field", "1:25k map field", "Field", value="Folha_25k")
+        p_50 = _param("f50_field", "1:50k map field", "Field", value="Folha_50k")
         for p in (p_code, p_25, p_50):
             p.parameterDependencies = [p_fc.name]
-        p_pre = _param("prefix", "Prefixo (ex.: MAG)", "GPString")
-        p_rx = _param("variant_regex", "Regex da variante (grupo 'var')", "GPString",
-                      value=DEFAULT_VARIANT_REGEX)
-        p_out = _param("out_folder", "Pasta de saída", "DEFolder")
-        p_cov = _param("min_coverage", "Cobertura mínima da folha (%)", "GPDouble",
+        p_pre = _param("prefix", "Output prefix (e.g. MAG)", "GPString")
+        p_rx = _param("variant_regex", "Variant regular expression (group 'var')",
+                      "GPString", value=DEFAULT_VARIANT_REGEX)
+        p_out = _param("out_folder", "Output folder", "DEFolder")
+        p_cov = _param("min_coverage", "Minimum sheet coverage (%)", "GPDouble",
                        value=99.0)
-        p_zero = _param("check_zero", "Contar píxeis RGB = 0 dentro da folha",
+        p_zero = _param("check_zero", "Count RGB = 0 pixels inside the sheet",
                         "GPBoolean", value=True)
-        p_dry = _param("dry_run", "Dry-run (só gera o CSV)", "GPBoolean", value=True)
+        p_dry = _param("dry_run", "Dry run (write CSV and log only)", "GPBoolean",
+                       value=True)
         return [p_in, p_rec, p_fc, p_code, p_25, p_50, p_pre, p_rx,
                 p_out, p_cov, p_zero, p_dry]
 
     def updateMessages(self, params):
         pre = params[6]
         if pre.value and _safe(pre.valueAsText) != pre.valueAsText:
-            pre.setErrorMessage("Use só letras, algarismos, '_' ou '-'.")
+            pre.setErrorMessage("Use letters, digits, '_' or '-' only.")
         rx = params[7]
         if rx.value:
             try:
                 if "var" not in re.compile(rx.valueAsText).groupindex:
-                    rx.setErrorMessage("A regex tem de ter um grupo (?P<var>...).")
+                    rx.setErrorMessage("The expression must define a group (?P<var>...).")
             except re.error as exc:
-                rx.setErrorMessage("Regex inválida: {}".format(exc))
+                rx.setErrorMessage("Invalid regular expression: {}".format(exc))
 
     def execute(self, params, messages):
         in_folder = params[0].valueAsText
@@ -327,12 +328,12 @@ class ClipSheets(object):
         dry_run = bool(params[11].value)
 
         # One timestamp shared by the .log and the .csv of this run
-        tag = "plano" if dry_run else "recorte"
+        tag = "plan" if dry_run else "clip"
         run_id = "{}_{}_{}".format(prefix, tag, _timestamp())
         log = RunLog(os.path.join(out_folder, run_id + ".log"))
         try:
-            log.info("Ferramenta: 1. Clip and Rename Sheets | dry-run={}".format(dry_run))
-            log.info("Entrada: {} (subpastas={}) | saída: {}".format(
+            log.info("Tool: 1. Clip and Rename Sheets | dry run={}".format(dry_run))
+            log.info("Input: {} (subfolders={}) | output: {}".format(
                 in_folder, recursive, out_folder))
             self._run(log, run_id, in_folder, recursive, fc, code_f, f25_f, f50_f,
                       prefix, vrx, out_folder, min_cov, check_zero, dry_run)
@@ -341,55 +342,55 @@ class ClipSheets(object):
 
     def _run(self, log, run_id, in_folder, recursive, fc, code_f, f25_f, f50_f,
              prefix, vrx, out_folder, min_cov, check_zero, dry_run):
-        carto_sr, sheets = _load_cartograma(fc, code_f, f25_f, f50_f)
+        carto_sr, sheets = _load_cartogram(fc, code_f, f25_f, f50_f)
         codes = [s["code"] for s in sheets]
         dup_codes = sorted({c for c in codes if codes.count(c) > 1})
         if dup_codes:
-            log.warn("Códigos repetidos no cartograma: {}".format(
+            log.warn("Duplicate codes in the cartogram: {}".format(
                 ", ".join(dup_codes[:20])))
-        log.info("Cartograma: {} folhas, CRS {}".format(len(sheets), carto_sr.name))
+        log.info("Cartogram: {} sheets, CRS {}".format(len(sheets), carto_sr.name))
 
         rasters = _list_rasters(in_folder, recursive, exclude=out_folder)
-        log.info("Rasters encontrados: {}".format(len(rasters)))
+        log.info("Rasters found: {}".format(len(rasters)))
         if not rasters:
             return
 
         # ---- Pass 1: identify sheets and plan names (no writing) ----------
         t_pass1 = time.perf_counter()
         rows, used_names = [], set()
-        arcpy.SetProgressor("step", "A identificar folhas...", 0, len(rasters), 1)
+        arcpy.SetProgressor("step", "Identifying sheets...", 0, len(rasters), 1)
         for path in rasters:
             fname = os.path.basename(path)
             stem = os.path.splitext(fname)[0]
             m = vrx.match(stem)
             variant = _safe(m.group("var")) if m else _safe(stem)
             row = dict.fromkeys(CSV_COLUMNS, "")
-            row.update(prefixo=prefix, ficheiro_original=fname,
-                       caminho_original=path, variante=variant, usar="0")
+            row.update(prefix=prefix, original_file=fname,
+                       original_path=path, variant=variant, use="0")
             if not m:
-                row["obs"] = "regex sem correspondência; variante = nome completo"
+                row["notes"] = "no regex match; variant = full file name"
             try:
                 ras = arcpy.Raster(path)
                 row["cell_x"] = "{:.4f}".format(ras.meanCellWidth)
                 row["cell_y"] = "{:.4f}".format(ras.meanCellHeight)
                 if not _same_sr(ras.spatialReference, carto_sr):
-                    row["estado"] = "CRS_DIFERENTE"
-                    log.warn("{}: CRS diferente ({})".format(fname, ras.spatialReference.name))
+                    row["state"] = "CRS_MISMATCH"
+                    log.warn("{}: CRS mismatch ({})".format(fname, ras.spatialReference.name))
                     rows.append(row)
                     arcpy.SetProgressorPosition()
                     continue
                 sheet, cov = _best_sheet(_footprint(ras), sheets)
                 if sheet is None:
-                    row["estado"] = "SEM_FOLHA"
-                    log.warn("{}: não intersecta nenhuma folha do cartograma".format(fname))
+                    row["state"] = "NO_SHEET"
+                    log.warn("{}: does not intersect any cartogram sheet".format(fname))
                     rows.append(row)
                     arcpy.SetProgressorPosition()
                     continue
-                row.update(codigo=sheet["code"], folha_25k=sheet["f25"],
-                           folha_50k=sheet["f50"], cobertura_pct="{:.2f}".format(cov))
-                row["estado"] = "OK" if cov >= min_cov else "COBERTURA_BAIXA"
-                if row["estado"] == "COBERTURA_BAIXA":
-                    log.warn("{}: cobertura {:.1f}% da folha {}".format(
+                row.update(code=sheet["code"], sheet_25k=sheet["f25"],
+                           sheet_50k=sheet["f50"], coverage_pct="{:.2f}".format(cov))
+                row["state"] = "OK" if cov >= min_cov else "LOW_COVERAGE"
+                if row["state"] == "LOW_COVERAGE":
+                    log.warn("{}: coverage {:.1f}% of sheet {}".format(
                         fname, cov, sheet["code"]))
                 base = "{}_{}".format(prefix, _safe(sheet["code"]))
                 name, k = base, 0
@@ -397,34 +398,34 @@ class ClipSheets(object):
                     k += 1
                     name = "{}_dup{}".format(base, k)
                 used_names.add(name.lower())
-                row["nome_saida"] = name + ".tif"
-                row["caminho_saida"] = os.path.join(out_folder, name + ".tif")
+                row["output_name"] = name + ".tif"
+                row["output_path"] = os.path.join(out_folder, name + ".tif")
                 row["_sheet"], row["_ras"] = sheet, ras
             except Exception as exc:  # keep going; the CSV records the failure
-                row["estado"] = "ERRO"
-                row["obs"] = str(exc)[:200]
-                log.warn("{}: ERRO na identificação: {}".format(fname, exc))
+                row["state"] = "ERROR"
+                row["notes"] = str(exc)[:200]
+                log.warn("{}: identification error: {}".format(fname, exc))
             rows.append(row)
             arcpy.SetProgressorPosition()
-        log.info("Identificação concluída em {}".format(
+        log.info("Identification completed in {}".format(
             _fmt_dur(time.perf_counter() - t_pass1)))
 
-        # ---- `usar`: 1 only for single-copy sheets with good coverage -----
+        # ---- `use`: 1 only for single-copy sheets with good coverage ------
         per_code = {}
         for r in rows:
-            if r["codigo"] and r["estado"] in ("OK", "COBERTURA_BAIXA"):
-                per_code[r["codigo"]] = per_code.get(r["codigo"], 0) + 1
+            if r["code"] and r["state"] in ("OK", "LOW_COVERAGE"):
+                per_code[r["code"]] = per_code.get(r["code"], 0) + 1
         for r in rows:
-            if r["codigo"] and r["estado"] == "OK" and per_code.get(r["codigo"]) == 1:
-                r["usar"] = "1"
+            if r["code"] and r["state"] == "OK" and per_code.get(r["code"]) == 1:
+                r["use"] = "1"
 
         # ---- Pass 2: clip (skipped in dry-run) -----------------------------
         if not dry_run:
             todo = [r for r in rows if "_sheet" in r]
             n = len(todo)
-            log.info("A recortar {} rasters...".format(n))
+            log.info("Clipping {} rasters...".format(n))
             t_pass2 = time.perf_counter()
-            arcpy.SetProgressor("step", "A recortar...", 0, n, 1)
+            arcpy.SetProgressor("step", "Clipping...", 0, n, 1)
             with arcpy.EnvManager(compression="LZW",
                                   pyramid="PYRAMIDS -1 BILINEAR",
                                   rasterStatistics="STATISTICS 1 1",
@@ -434,36 +435,36 @@ class ClipSheets(object):
                     try:
                         if check_zero:
                             t = time.perf_counter()
-                            n0 = _count_rgb_zero(r["caminho_original"], r["_ras"],
+                            n0 = _count_rgb_zero(r["original_path"], r["_ras"],
                                                  r["_sheet"])
                             r["t_zero_s"] = "{:.1f}".format(time.perf_counter() - t)
                             r["n_pix_rgb_zero"] = str(n0)
                             if n0 == -1:
-                                r["obs"] = (r["obs"] + "; menos de 3 bandas").strip("; ")
+                                r["notes"] = (r["notes"] + "; fewer than 3 bands").strip("; ")
                             elif n0 > 0:
-                                log.warn("{}: {} píxeis RGB=0 viram NoData".format(
-                                    r["ficheiro_original"], n0))
-                        if arcpy.Exists(r["caminho_saida"]):
-                            r["obs"] = (r["obs"] + "; já existia, não reescrito").strip("; ")
-                            status = "já existia"
+                                log.warn("{}: {} RGB=0 pixels become NoData".format(
+                                    r["original_file"], n0))
+                        if arcpy.Exists(r["output_path"]):
+                            r["notes"] = (r["notes"] + "; output exists, not rewritten").strip("; ")
+                            status = "EXISTS"
                         else:
                             t = time.perf_counter()
-                            _clip(r["caminho_original"], r["_sheet"], r["caminho_saida"])
+                            _clip(r["original_path"], r["_sheet"], r["output_path"])
                             r["t_clip_s"] = "{:.1f}".format(time.perf_counter() - t)
                             status = "OK"
                     except Exception as exc:
-                        r["estado"] = "ERRO"
-                        r["usar"] = "0"
-                        r["obs"] = (r["obs"] + "; " + str(exc)[:200]).strip("; ")
-                        status = "ERRO: {}".format(str(exc)[:120])
+                        r["state"] = "ERROR"
+                        r["use"] = "0"
+                        r["notes"] = (r["notes"] + "; " + str(exc)[:200]).strip("; ")
+                        status = "ERROR: {}".format(str(exc)[:120])
                     log.progress(i, n, "{} -> {} | {} | zero {} s | clip {} s".format(
-                        r["ficheiro_original"], r["nome_saida"], status,
+                        r["original_file"], r["output_name"], status,
                         r["t_zero_s"] or "-", r["t_clip_s"] or "-"),
                         time.perf_counter() - t_item)
                     arcpy.SetProgressorPosition()
             if arcpy.Exists(TMP_CLIP_FC):
                 arcpy.management.Delete(TMP_CLIP_FC)
-            log.info("Recorte concluído em {}".format(
+            log.info("Clipping completed in {}".format(
                 _fmt_dur(time.perf_counter() - t_pass2)))
 
         # ---- CSV (timestamped, so operator edits are never overwritten) ---
@@ -477,11 +478,11 @@ class ClipSheets(object):
         # ---- Summary -------------------------------------------------------
         states = {}
         for r in rows:
-            states[r["estado"]] = states.get(r["estado"], 0) + 1
+            states[r["state"]] = states.get(r["state"], 0) + 1
         n_dup = sum(1 for c, k in per_code.items() if k > 1)
-        log.info("Estados: " + ", ".join(
+        log.info("States: " + ", ".join(
             "{}={}".format(k, v) for k, v in sorted(states.items())))
-        log.info("Folhas com mais de uma cópia (usar=0, rever): {}".format(n_dup))
+        log.info("Sheets with more than one copy (use=0, to review): {}".format(n_dup))
         log.info("CSV: {}".format(csv_path))
 
 
@@ -498,7 +499,7 @@ def _visible_raster_layers():
     """
     m = arcpy.mp.ArcGISProject("CURRENT").activeMap
     if m is None:
-        raise RuntimeError("Não há mapa activo.")
+        raise RuntimeError("No active map.")
     layers = m.listLayers()
     hidden = {l.longName for l in layers if l.isGroupLayer and not l.visible}
     paths = []
@@ -533,34 +534,34 @@ class MosaicSheets(object):
 
     def __init__(self):
         self.label = "2. Mosaic Sheets by Map"
-        self.description = ("Mosaica os rasters visíveis no mapa (e/ou uma lista), "
-                            "agrupados por carta 1:25k ou 1:50k, projectando "
-                            "numa só reamostragem.")
+        self.description = ("Mosaics the raster layers visible in the active map "
+                            "(and/or a list), grouped by 1:25k or 1:50k map, "
+                            "projecting with a single resampling.")
         self.canRunInBackground = False  # needs the CURRENT project
 
     def getParameterInfo(self):
-        p_vis = _param("use_visible", "Usar todos os rasters visíveis no mapa activo",
+        p_vis = _param("use_visible", "Use all raster layers visible in the active map",
                        "GPBoolean", value=True)
-        p_ras = _param("rasters", "Rasters adicionais (opcional)", "GPRasterLayer",
+        p_ras = _param("rasters", "Additional rasters (optional)", "GPRasterLayer",
                        ptype="Optional", multi=True)
-        p_fc = _param("cartograma", "Cartograma (polígonos 1:5000)", "GPFeatureLayer")
-        p_code = _param("code_field", "Campo de código", "Field", value="COD_50255k")
-        p_25 = _param("f25_field", "Campo folha 1:25k", "Field", value="Folha_25k")
-        p_50 = _param("f50_field", "Campo folha 1:50k", "Field", value="Folha_50k")
+        p_fc = _param("cartogram", "Cartogram (1:5000 sheet polygons)", "GPFeatureLayer")
+        p_code = _param("code_field", "Sheet code field", "Field", value="COD_50255k")
+        p_25 = _param("f25_field", "1:25k map field", "Field", value="Folha_25k")
+        p_50 = _param("f50_field", "1:50k map field", "Field", value="Folha_50k")
         for p in (p_code, p_25, p_50):
             p.parameterDependencies = [p_fc.name]
-        p_grp = _param("group", "Agrupar por", "GPString", value="Folha_25k")
+        p_grp = _param("group", "Group by", "GPString", value="Folha_25k")
         p_grp.filter.type = "ValueList"
         p_grp.filter.list = list(self.GROUP_KEYS)
-        p_pre = _param("prefix", "Prefixo de saída (ex.: MAG)", "GPString")
-        p_out = _param("out_folder", "Pasta de saída", "DEFolder")
-        p_sr = _param("out_sr", "Sistema de coordenadas de saída",
+        p_pre = _param("prefix", "Output prefix (e.g. MAG)", "GPString")
+        p_out = _param("out_folder", "Output folder", "DEFolder")
+        p_sr = _param("out_sr", "Output coordinate system",
                       "GPSpatialReference", value=arcpy.SpatialReference(3763))
-        p_tr = _param("transformation", "Transformação geográfica (automática)",
+        p_tr = _param("transformation", "Geographic transformation (filled automatically)",
                       "GPString", ptype="Optional")
         p_tr.filter.type = "ValueList"
-        p_cs = _param("cell_size", "Tamanho de célula (m)", "GPDouble", value=0.4)
-        p_rs = _param("resampling", "Reamostragem", "GPString", value="BILINEAR")
+        p_cs = _param("cell_size", "Cell size (m)", "GPDouble", value=0.4)
+        p_rs = _param("resampling", "Resampling method", "GPString", value="BILINEAR")
         p_rs.filter.type = "ValueList"
         p_rs.filter.list = ["BILINEAR", "NEAREST", "CUBIC"]
         return [p_vis, p_ras, p_fc, p_code, p_25, p_50, p_grp, p_pre,
@@ -585,12 +586,12 @@ class MosaicSheets(object):
 
     def updateMessages(self, params):
         if not params[0].value and not params[1].value:
-            params[1].setErrorMessage("Active os rasters visíveis ou indique rasters.")
+            params[1].setErrorMessage("Enable the visible rasters or list input rasters.")
         pre = params[7]
         if pre.value and _safe(pre.valueAsText) != pre.valueAsText:
-            pre.setErrorMessage("Use só letras, algarismos, '_' ou '-'.")
+            pre.setErrorMessage("Use letters, digits, '_' or '-' only.")
         if params[11].value is not None and params[11].value <= 0:
-            params[11].setErrorMessage("O tamanho de célula tem de ser positivo.")
+            params[11].setErrorMessage("Cell size must be positive.")
 
     def execute(self, params, messages):
         use_visible = bool(params[0].value)
@@ -606,11 +607,11 @@ class MosaicSheets(object):
         resampling = params[12].valueAsText
 
         scale_tag = self.GROUP_KEYS[group_name][1]
-        run_id = "{}_mosaico_{}_{}".format(prefix, scale_tag, _timestamp())
+        run_id = "{}_mosaic_{}_{}".format(prefix, scale_tag, _timestamp())
         log = RunLog(os.path.join(out_folder, run_id + ".log"))
         try:
-            log.info("Ferramenta: 2. Mosaic Sheets by Map | agrupar por {}".format(group_name))
-            log.info("CRS saída: {} | transformação: {} | célula: {} m | {}".format(
+            log.info("Tool: 2. Mosaic Sheets by Map | group by {}".format(group_name))
+            log.info("Output CRS: {} | transformation: {} | cell: {} m | {}".format(
                 out_sr.name, trans or "-", cs, resampling))
             self._run(log, run_id, use_visible, extra, fc, code_f, f25_f, f50_f,
                       group_name, scale_tag, prefix, out_folder, out_sr, trans,
@@ -628,7 +629,7 @@ class MosaicSheets(object):
             # files named PREFIX_* by tool 1 are taken from the map.
             tag = (prefix + "_").lower()
             keep = [p for p in vis if os.path.basename(p).lower().startswith(tag)]
-            log.info("Rasters visíveis no mapa: {} | com prefixo {}_: {} | ignorados: {}".format(
+            log.info("Visible rasters in map: {} | with prefix {}_: {} | ignored: {}".format(
                 len(vis), prefix, len(keep), len(vis) - len(keep)))
             paths += keep
         if extra:
@@ -643,34 +644,34 @@ class MosaicSheets(object):
                 seen.add(k)
                 inputs.append(p)
         if not inputs:
-            log.error("Nenhum raster de entrada.")
+            log.error("No input rasters.")
             return
-        log.info("Rasters de entrada (sem repetições): {}".format(len(inputs)))
+        log.info("Input rasters (duplicates removed): {}".format(len(inputs)))
 
         # ---- Identify each raster's sheet from its georeferencing --------
-        carto_sr, sheets = _load_cartograma(fc, code_f, f25_f, f50_f)
+        carto_sr, sheets = _load_cartogram(fc, code_f, f25_f, f50_f)
         key_attr = self.GROUP_KEYS[group_name][0]
         per_sheet, bad = {}, 0
         for p in inputs:
             name = os.path.basename(p)
             ras = arcpy.Raster(p)
             if not _same_sr(ras.spatialReference, carto_sr):
-                log.error("{}: CRS {} diferente do cartograma ({})".format(
+                log.error("{}: CRS {} differs from the cartogram ({})".format(
                     name, ras.spatialReference.name, carto_sr.name))
                 bad += 1
                 continue
             sheet, cov = _best_sheet(_footprint(ras), sheets)
             if sheet is None:
-                log.error("{}: não intersecta nenhuma folha".format(name))
+                log.error("{}: does not intersect any sheet".format(name))
                 bad += 1
                 continue
             per_sheet.setdefault(sheet["code"], []).append((p, sheet))
         conflicts = {c: v for c, v in per_sheet.items() if len(v) > 1}
         for c, v in sorted(conflicts.items()):
-            log.error("Folha {} com {} rasters: {}".format(
+            log.error("Sheet {} has {} rasters: {}".format(
                 c, len(v), ", ".join(os.path.basename(x[0]) for x in v)))
         if bad or conflicts:
-            log.error("Corrija a selecção (desligue as cópias a mais no mapa) e volte a correr.")
+            log.error("Correct the selection (switch off the extra copies in the map) and run again.")
             return
 
         # ---- Datum transformation: required when datums differ ------------
@@ -679,13 +680,13 @@ class MosaicSheets(object):
             if not trans:
                 trans = _pick_transformation(available)
                 if not trans:
-                    log.error("Datums diferentes ({} -> {}) e nenhuma transformação "
-                              "disponível.".format(carto_sr.GCS.name, out_sr.GCS.name))
+                    log.error("Datums differ ({} -> {}) and no transformation "
+                              "is available.".format(carto_sr.GCS.name, out_sr.GCS.name))
                     return
-                log.info("Transformação escolhida automaticamente: {}".format(trans))
+                log.info("Transformation selected automatically: {}".format(trans))
             elif trans not in available:
-                log.warn("Transformação '{}' não aparece em ListTransformations "
-                         "para este par de CRS.".format(trans))
+                log.warn("Transformation '{}' is not listed by ListTransformations "
+                         "for this CRS pair.".format(trans))
         else:
             trans = ""
 
@@ -696,10 +697,10 @@ class MosaicSheets(object):
         for s in sheets:
             expected.setdefault(s[key_attr], set()).add(s["code"])
         n = len(groups)
-        log.info("Cartas a mosaicar: {}".format(n))
+        log.info("Maps to mosaic: {}".format(n))
 
         log_rows = []
-        arcpy.SetProgressor("step", "A mosaicar...", 0, n, 1)
+        arcpy.SetProgressor("step", "Mosaicking...", 0, n, 1)
         for i, key in enumerate(sorted(groups), 1):
             t_item = time.perf_counter()
             members = sorted(groups[key])
@@ -708,15 +709,15 @@ class MosaicSheets(object):
             out_path = os.path.join(out_folder, name)
             present = {c for c, _p in members}
             absent = sorted(expected.get(key, set()) - present)
-            rec = {"carta": key, "n_folhas": len(members),
-                   "codigos": " ".join(sorted(present)),
-                   "em_falta": " ".join(absent),
+            rec = {"map": key, "n_sheets": len(members),
+                   "codes": " ".join(sorted(present)),
+                   "missing": " ".join(absent),
                    "rasters": " ".join(os.path.basename(p) for p in src),
-                   "saida": out_path, "transformacao": trans, "cell_size": cs,
-                   "t_mosaico_s": "", "estado": "", "obs": ""}
+                   "output_path": out_path, "transformation": trans, "cell_size": cs,
+                   "t_mosaic_s": "", "state": "", "notes": ""}
             try:
                 if arcpy.Exists(out_path):
-                    rec["estado"], rec["obs"] = "JA_EXISTE", "não reescrito"
+                    rec["state"], rec["notes"] = "EXISTS", "not rewritten"
                 else:
                     # Projected union extent snapped outward to cell multiples
                     xs, ys = [], []
@@ -747,19 +748,19 @@ class MosaicSheets(object):
                     oe = arcpy.Raster(out_path).extent
                     off = [abs(v / cs - round(v / cs)) for v in (oe.XMin, oe.YMax)]
                     if max(off) > 1e-3:
-                        rec["obs"] = "grelha não alinhada a múltiplos de {} m".format(cs)
-                        log.warn("{}: {}".format(name, rec["obs"]))
-                    rec["estado"] = "OK"
+                        rec["notes"] = "grid not aligned to multiples of {} m".format(cs)
+                        log.warn("{}: {}".format(name, rec["notes"]))
+                    rec["state"] = "OK"
                 if absent:
-                    log.warn("{}: {} de {} folhas em falta".format(
+                    log.warn("{}: {} of {} sheets missing".format(
                         name, len(absent), len(expected.get(key, ()))))
             except Exception as exc:
-                rec["estado"], rec["obs"] = "ERRO", str(exc)[:200]
+                rec["state"], rec["notes"] = "ERROR", str(exc)[:200]
                 log.warn("{}: {}".format(name, exc))
             dt = time.perf_counter() - t_item
-            rec["t_mosaico_s"] = "{:.1f}".format(dt)
-            log.progress(i, n, "{} | {} folhas | {}".format(
-                name, len(members), rec["estado"]), dt)
+            rec["t_mosaic_s"] = "{:.1f}".format(dt)
+            log.progress(i, n, "{} | {} sheets | {}".format(
+                name, len(members), rec["state"]), dt)
             log_rows.append(rec)
             arcpy.SetProgressorPosition()
 
@@ -768,4 +769,4 @@ class MosaicSheets(object):
             w = csv.DictWriter(f, fieldnames=list(log_rows[0]), delimiter=CSV_DELIM)
             w.writeheader()
             w.writerows(log_rows)
-        log.info("Mosaicos: {} | CSV: {}".format(len(log_rows), csv_out))
+        log.info("Mosaics: {} | CSV: {}".format(len(log_rows), csv_out))
