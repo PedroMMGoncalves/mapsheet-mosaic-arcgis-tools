@@ -23,6 +23,7 @@ on:
       - "tests/**"
       - ".github/workflows/ci.yml"
       - "pytest.ini"
+  workflow_dispatch:
 
 jobs:
   syntax-check:

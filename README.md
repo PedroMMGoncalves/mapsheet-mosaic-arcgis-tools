@@ -21,9 +21,8 @@ single resampling step.
 The code makes no assumption on sheet size, map scale, file naming, band count
 or pixel type: these are taken from the cartogram, the tool parameters and
 the rasters. The toolbox was developed at LNEG for the processing of scanned
-map-sheet archives; the first collection processed consists of 1:5000
-magnetometric (isogam) sheets of the Faixa Magnetítica Sul-Alentejana
-produced by the Serviço de Fomento Mineiro.
+map-sheet archives. The first test case is a collection of 1:5000 map sheets
+from the magnetic surveys carried out by the Serviço de Fomento Mineiro (SFM).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 
@@ -112,15 +111,15 @@ flowchart TD
 
 ### Sheet identification
 
-The footprint $F$ of a raster is its axis-aligned extent. Among the cartogram
-polygons $S_k$ that intersect $F$, the sheet assigned is the one with the
+The footprint $`F`$ of a raster is its axis-aligned extent. Among the cartogram
+polygons $`S_k`$ that intersect $`F`$, the sheet assigned is the one with the
 largest area of intersection, and its coverage is expressed relative to the
 sheet area:
 
-$$
-k^{*} = \arg\max_{k} A\left(F \cap S_k\right), \qquad
-\mathrm{coverage} = 100 \cdot \frac{A\left(F \cap S_{k^{*}}\right)}{A\left(S_{k^{*}}\right)}
-$$
+```math
+k^{\ast} = \arg\max_{k} A\left(F \cap S_k\right), \qquad
+\mathrm{coverage} = 100 \cdot \frac{A\left(F \cap S_{k^{\ast}}\right)}{A\left(S_{k^{\ast}}\right)}
+```
 
 Identity therefore follows the georeferencing, not the file name; a misnamed
 file is assigned to the sheet it actually covers. A raster with coverage below
@@ -150,34 +149,66 @@ the selected resampling method and an explicit geographic transformation
 (an NTv2 grid transformation is preferred when listed; Junkins and Farley,
 1995). The output extent is the union of the input footprints projected to
 the output coordinate system, snapped outward to multiples of the cell size
-$c$:
+$`c`$:
 
-$$
-x'_{\min} = c \left\lfloor \frac{x_{\min}}{c} \right\rfloor, \quad
-x'_{\max} = c \left\lceil \frac{x_{\max}}{c} \right\rceil, \quad
+```math
+x'_{\min} = c \left\lfloor \frac{x_{\min}}{c} \right\rfloor, \qquad
+x'_{\max} = c \left\lceil \frac{x_{\max}}{c} \right\rceil, \qquad
 \text{and likewise for } y
-$$
+```
 
 Mosaics of neighbouring groups therefore share one grid. Because the
 honouring of the extent environment is not assumed, the corner coordinates of
 the written raster are checked after writing, and a warning is issued when
-$\left| x / c - \operatorname{round}(x / c) \right| > 10^{-3}$ for
-$x \in \{X_{\min}, Y_{\max}\}$.
+
+```math
+\left| \frac{x}{c} - \mathrm{round}\left(\frac{x}{c}\right) \right| > 10^{-3}
+\quad \text{for } x \in \lbrace X_{\min},\ Y_{\max} \rbrace
+```
 
 The cell size is fixed rather than derived from the inputs, so that all
 mosaics of a collection share resolution and grid. Inputs with a coarser cell
 are upsampled; this adds pixels but no information.
 
+### Datum transformation: NTv2 grids for Portugal
+
+The conversion from Lisboa Hayford-Gauss (Datum Lisboa) to ETRS89 / PT-TM06
+involves a change of datum. Seven-parameter (Bursa-Wolf) transformations are
+approximate, with errors of some metres, and do not model the distortions of
+the classical geodetic network (Madeira, 2009). At 1:5000, 0.2 mm on the map
+corresponds to 1 m on the ground, so errors of that size are visible at the
+scale of the source documents. Grid-based transformations in NTv2 format
+(Junkins and Farley, 1995) interpolate the coordinate differences between the
+two datums observed at the points of the geodetic network.
+
+For mainland Portugal, NTv2 grids were produced by J. A. Gonçalves
+(Faculdade de Ciências da Universidade do Porto) from about 900 points of the
+first- and second-order geodetic network with coordinates in ETRS89 and in the
+local datums, interpolated by kriging (Madeira, 2009; OSGeo Wiki, 2014):
+
+| Grid file | Transformation |
+| --- | --- |
+| `ptLX_e89.gsb` | Datum Lisboa → ETRS89 |
+| `pt73_e89.gsb` | Datum 73 → ETRS89 |
+
+A grid that is not available among the system transformations of ArcGIS Pro
+can be registered with the *Create Custom Geographic Transformation* tool,
+method `NTV2` (the procedure for ArcGIS Desktop is described by Madeira,
+2009). Tool 2 fills its *Geographic transformation* list with
+`ListTransformations` for the pair cartogram CRS → output CRS and preselects
+the first name containing `NTv2`. Whether custom transformations are returned
+by `ListTransformations` remains to be verified in ArcGIS Pro.
+
 ### NoData
 
 One NoData value (default 0) is assigned to all bands. Since a source pixel
 equal to that value would become NoData after clipping, Tool 1 can count, in
-the sheet window $W$, the pixels $p$ that equal the NoData value $v_0$ in at
-least one band $b$:
+the sheet window $`W`$, the pixels $`p`$ that equal the NoData value $`v_0`$ in at
+least one band $`b`$:
 
-$$
-n_{\mathrm{NoData}} = \left| \left\{ p \in W : \exists\, b,\; v_b(p) = v_0 \right\} \right|
-$$
+```math
+n_{\mathrm{NoData}} = \left| \left\lbrace p \in W : \exists\ b,\ v_b(p) = v_0 \right\rbrace \right|
+```
 
 Cells that are already NoData in the source (e.g. corners of a rectified
 scan) are read as a different value and are not counted. NoData is stored per
@@ -348,15 +379,15 @@ reviewed for other collections.
 | File extensions | `.tif;.tiff` | GeoTIFF scans |
 
 The ground cell size of a scan follows from the scanning resolution and the
-map scale denominator $N$:
+map scale denominator $`N`$:
 
-$$
+```math
 c = \frac{0.0254\ \mathrm{m}}{\mathrm{dpi}} \cdot N
-$$
+```
 
 At 1:5000 this gives 0.423 m at 300 dpi and 0.529 m at 240 dpi. A 0.4 m output
 cell therefore slightly oversamples the 300 dpi scans and upsamples the
-240 dpi scans by a factor of about $(0.529 / 0.4)^2 \approx 1.75$ in pixel
+240 dpi scans by a factor of about $`(0.529 / 0.4)^2 \approx 1.75`$ in pixel
 count.
 
 ---
@@ -435,7 +466,7 @@ scope of the suite and is validated in ArcGIS Pro.
 | Warning `pixels equal to NoData` | Image pixels (e.g. black ink) carry the NoData value | Choose a NoData value absent from the data (see band minima in the raster statistics) and run again into a new output folder |
 | Tool 2: `Sheet ... has N rasters` | More than one copy of a sheet visible or listed | Switch off the extra copies (a layer counts as visible only if all its parent group layers are on) |
 | Tool 2: visible layers reported as ignored | File names do not start with `PREFIX_` | Use the prefix of Tool 1, or list the rasters under *Additional rasters* |
-| Tool 2: `Datums differ ... and no transformation is available` | `ListTransformations` returns nothing for the coordinate system pair | Install the *ArcGIS Coordinate Systems Data* grids, or enter the transformation explicitly |
+| Tool 2: `Datums differ ... and no transformation is available`, or no NTv2 option in the list | `ListTransformations` returns no (grid) transformation for the coordinate system pair | Install the *ArcGIS Coordinate Systems Data* grids, or register the Portuguese NTv2 grid as a custom geographic transformation (see [Datum transformation](#datum-transformation-ntv2-grids-for-portugal)); the list accepts only names returned by `ListTransformations` |
 | Tool 2: `grid not aligned to multiples of the cell size` | Extent environment not honoured by the geoprocessing tool | The mosaic is valid but off the common grid; report the case with the `.log` |
 | Tool 2: `No active map` | Tool run without an active map view | Open a map view and run the tool in the foreground |
 | Outputs not rewritten (`output exists` / `EXISTS`) | Outputs present from an earlier run | Intended for resuming; delete the outputs or use a new output folder to recompute |
@@ -479,6 +510,19 @@ grant and patent-retaliation clauses apply per the Apache 2.0 terms.
 - Junkins, D. R., & Farley, S. A. (1995). *NTv2 Developer's Guide*. Geodetic
   Survey Division, Natural Resources Canada. Grid-based datum transformation
   format used for the Lisboa to ETRS89 transformation.
+- Gonçalves, J. A. *NTv2 transformation grids for the Portuguese datums*
+  (Datum Lisboa, Datum 73 → ETRS89). Faculdade de Ciências da Universidade do
+  Porto. Originally distributed at `fc.up.pt/pessoas/jagoncal/coordenadas`,
+  not reachable in November 2026; described in the two sources below.
+- Madeira, L. C. (2009, April 10). *[ArcGIS] Grelhas no formato NTv2*. Blog
+  *uma espécie de bloco de notas...*.
+  <https://luiscarlosmadeira.blogs.sapo.pt/17651.html>. Origin of the grids
+  (about 900 geodetic points, kriging), comparison with Bursa-Wolf
+  transformations, and registration of `pt73_e89.gsb` / `ptLX_e89.gsb` as
+  custom NTv2 transformations in ArcGIS.
+- OSGeo Wiki (2014). *Transformação de coordenadas cartográficas* (marked
+  obsolete). <https://wiki.osgeo.org/wiki/Transforma%C3%A7%C3%A3o_de_coordenadas_cartogr%C3%A1ficas>.
+  Use of the same grids with PROJ (`cs2cs`, `ogr2ogr`).
 - IOGP EPSG Geodetic Parameter Dataset. *EPSG:3763, ETRS89-PRT [1995] /
   Portugal TM06*. <https://epsg.io/3763>
 
