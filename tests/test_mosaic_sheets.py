@@ -229,3 +229,16 @@ def test_nodata_outside_pixel_type_range_stops_the_run(tbx, fake, clipped):
     _mosaic(tbx, clipped, nodata=-1)
     assert not calls(fake, "MosaicToNewRaster")
     assert any("outside the range of pixel type U8" in t for t in _errors(fake))
+
+
+def test_all_layers_switched_off_explains_why(tbx, fake, clipped):
+    for layer in fake.LAYERS:
+        layer.visible = False
+    _mosaic(tbx, clipped)
+    assert not calls(fake, "MosaicToNewRaster")
+    infos = [t for lv, t in fake.MESSAGES if lv == "INFO"]
+    assert any(t.startswith("Visible rasters in map: 0 | with prefix MAG_: 0") and
+               t.endswith("switched off with prefix MAG_: 6") for t in infos), infos
+    errors = _errors(fake)
+    assert errors[-1].startswith("No input rasters: 6 raster layer(s) named MAG_* are in "
+                                 "the active map but switched off")

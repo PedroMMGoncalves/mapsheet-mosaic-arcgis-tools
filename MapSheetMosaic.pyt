@@ -791,8 +791,9 @@ class ClipSheets(object):
 # Tool 2
 # --------------------------------------------------------------------------
 
-def _visible_raster_layers():
-    """Return data sources of raster layers visible in the active map.
+def _raster_layers_by_visibility():
+    """Return (visible, switched_off) data sources of raster layers in the
+    active map.
 
     A layer counts as visible only if its own checkbox is on and no parent
     group layer is switched off (listLayers() flattens the tree, so
@@ -803,15 +804,17 @@ def _visible_raster_layers():
         raise RuntimeError("No active map.")
     layers = m.listLayers()
     hidden = {l.longName for l in layers if l.isGroupLayer and not l.visible}
-    paths = []
+    visible, off = [], []
     for l in layers:
-        if not (l.isRasterLayer and l.visible):
+        if not l.isRasterLayer:
             continue
         parts = l.longName.split("\\")
         ancestors = {"\\".join(parts[:k]) for k in range(1, len(parts))}
-        if not ancestors & hidden:
-            paths.append(l.dataSource)
-    return paths
+        if l.visible and not ancestors & hidden:
+            visible.append(l.dataSource)
+        else:
+            off.append(l.dataSource)
+    return visible, off
 
 
 def _pick_transformation(available):
@@ -929,15 +932,18 @@ class MosaicSheets(object):
 
     def _run(self, log, run_id, c):
         # ---- Collect inputs ------------------------------------------------
-        paths = []
+        paths, n_off = [], 0
         if c.use_visible:
-            vis = _visible_raster_layers()
+            vis, off = _raster_layers_by_visibility()
             # Ignore other rasters in the map (originals, DEMs, ...): only
             # files named PREFIX_* by tool 1 are taken from the map.
             tag = (c.prefix + "_").lower()
             keep = [p for p in vis if os.path.basename(p).lower().startswith(tag)]
-            log.info("Visible rasters in map: {} | with prefix {}_: {} | ignored: {}".format(
-                len(vis), c.prefix, len(keep), len(vis) - len(keep)))
+            n_off = sum(1 for p in off if os.path.basename(p).lower().startswith(tag))
+            log.info("Visible rasters in map: {} | with prefix {}_: {} | ignored: {} | "
+                     "switched off with prefix {}_: {}".format(
+                         len(vis), c.prefix, len(keep), len(vis) - len(keep),
+                         c.prefix, n_off))
             paths += keep
         for item in _split_multi(c.extra):
             paths.append(arcpy.Describe(item).catalogPath)
@@ -948,7 +954,14 @@ class MosaicSheets(object):
                 seen.add(k)
                 inputs.append(p)
         if not inputs:
-            log.error("No input rasters.")
+            if n_off:
+                log.error("No input rasters: {} raster layer(s) named {}_* are in the active "
+                          "map but switched off (own checkbox or a parent group layer). "
+                          "Switch on one copy of each sheet, or list the rasters under "
+                          "Additional rasters.".format(n_off, c.prefix))
+            else:
+                log.error("No input rasters: the active map has no visible raster layer "
+                          "named {}_* and no additional rasters were given.".format(c.prefix))
             return
         log.info("Input rasters (duplicates removed): {}".format(len(inputs)))
 

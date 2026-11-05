@@ -5,6 +5,15 @@ versioning follows [Semantic Versioning](https://semver.org/). `TOOLBOX_VERSION`
 [`MapSheetMosaic.pyt`](MapSheetMosaic.pyt) tracks the same value as `version:` in
 [`CITATION.cff`](CITATION.cff).
 
+## [Unreleased]
+
+### Changed
+
+- Tool 2: the input summary also counts raster layers named `PREFIX_*` that are in the
+  active map but switched off (own checkbox or a parent group layer). When no input
+  raster remains, the error states whether such layers exist and how to select them,
+  instead of only "No input rasters".
+
 ## [0.1.1] - 2026-11-05
 
 ### Fixed
