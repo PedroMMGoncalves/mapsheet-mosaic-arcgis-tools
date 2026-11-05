@@ -5,7 +5,21 @@ versioning follows [Semantic Versioning](https://semver.org/). `TOOLBOX_VERSION`
 [`MapSheetMosaic.pyt`](MapSheetMosaic.pyt) tracks the same value as `version:` in
 [`CITATION.cff`](CITATION.cff).
 
-## [Unreleased]
+## [0.1.1] - 2026-11-05
+
+### Fixed
+
+- Tool 2: projection now uses `Project Raster` per sheet, with the geographic
+  transformation and the registration point (0, 0) as explicit parameters, followed by
+  `Mosaic To New Raster` of the projected sheets. In 0.1.0 the projection was left to
+  `Mosaic To New Raster`, which does not honour the Output Coordinate System, Geographic
+  Transformations or Snap Raster environments: in a first run on the test collection
+  the mosaic grid origin was offset by 0.42 and 0.04 cells from the multiples of the cell
+  size (alignment warning), and the transformation actually applied could not be
+  verified. Each pixel is still resampled once; the mosaic step copies cells of the
+  aligned projected sheets. Verified in ArcGIS Pro 3.7: grid exactly on multiples of
+  0.4 m, transformation parameter honoured, cell values unchanged by the mosaic, no
+  NoData cells along sheet seams, background written as NoData 0.
 
 ### Added
 

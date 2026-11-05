@@ -13,6 +13,7 @@ Raster-touching behaviour of the real tools (resampling, compression,
 NoData writing) is not represented and must be validated in ArcGIS Pro.
 """
 
+import math
 import os
 
 import numpy as np
@@ -23,7 +24,7 @@ LAYERS = []     # layers of the active map
 CALLS = []      # (name, args, kwargs) of geoprocessing calls
 EXISTING = set()
 MESSAGES = []   # (level, text)
-STATE = {"honour_extent": True, "active_map": True}
+STATE = {"mosaic_aligned": True, "active_map": True}
 SHIFT = (-287000.3, -300000.7)
 _ENV = []
 
@@ -42,7 +43,7 @@ _PTYPE_OF = {"8_BIT_UNSIGNED": "U8", "16_BIT_UNSIGNED": "U16",
 def reset():
     for container in (RASTERS, FCS, LAYERS, CALLS, EXISTING, MESSAGES, _ENV):
         container.clear()
-    STATE.update(honour_extent=True, active_map=True)
+    STATE.update(mosaic_aligned=True, active_map=True)
     env.scratchFolder = None
 
 
@@ -237,14 +238,33 @@ class management(object):
         EXISTING.add(out_raster)
 
     @staticmethod
+    def ProjectRaster(in_raster, out_raster, out_sr, resampling, cell,
+                      transformation="", registration_point=None, in_sr=None):
+        """Footprint shifted by SHIFT, snapped outward to the registration grid."""
+        CALLS.append(("ProjectRaster", (in_raster, out_raster, out_sr, resampling, cell,
+                                        transformation, registration_point),
+                      dict(_ENV[-1]) if _ENV else {}))
+        src = RASTERS[in_raster]
+        x0, y0 = (float(v) for v in registration_point.split())
+        e = Polygon(None, None, src["extent"]).projectAs(out_sr).rect
+        snap = lambda v, f: x0 + f((v - x0) / cell) * cell  # noqa: E731
+        rect = (snap(e[0], math.floor), y0 + math.floor((e[1] - y0) / cell) * cell,
+                snap(e[2], math.ceil), y0 + math.ceil((e[3] - y0) / cell) * cell)
+        RASTERS[out_raster] = dict(src, extent=rect, cell=cell, wkid=out_sr.factoryCode)
+        EXISTING.add(out_raster)
+
+    @staticmethod
     def MosaicToNewRaster(inputs, folder, name, sr, pixel_type, cell, bands,
                           method, colormap):
+        """Union of the input extents; `mosaic_aligned` False simulates a
+        mosaic whose origin does not follow the inputs."""
         CALLS.append(("MosaicToNewRaster", (inputs, folder, name, sr, pixel_type,
                                             cell, bands, method, colormap), {}))
-        e = _ENV[-1]["extent"]
-        off = 0.0 if STATE["honour_extent"] else 0.1
+        rects = [RASTERS[p]["extent"] for p in inputs.split(";")]
+        off = 0.0 if STATE["mosaic_aligned"] else 0.1
         out = os.path.join(folder, name)
-        RASTERS[out] = dict(extent=(e.XMin + off, e.YMin + off, e.XMax + off, e.YMax + off),
+        RASTERS[out] = dict(extent=(min(r[0] for r in rects) + off, min(r[1] for r in rects) + off,
+                                    max(r[2] for r in rects) + off, max(r[3] for r in rects) + off),
                             cell=cell, wkid=sr.factoryCode, bands=bands,
                             ptype=_PTYPE_OF.get(pixel_type, "U8"))
         EXISTING.add(out)

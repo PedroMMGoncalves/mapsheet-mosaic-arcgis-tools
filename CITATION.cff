@@ -12,13 +12,13 @@ abstract: >
   polygons of a cartogram), clips the collar with the sheet polygon while
   preserving the source cell grid, and renames the result by sheet code,
   reporting coverage, duplicate scans and pixels coinciding with the NoData
-  value. Tool 2 mosaics an operator-selected copy of each sheet, grouped by
-  any cartogram attribute, directly into the target coordinate system with
-  an explicit datum transformation, so that projection and mosaicking share
-  a single resampling step on a grid snapped to multiples of the cell size.
+  value. Tool 2 projects an operator-selected copy of each sheet once, with
+  an explicit datum transformation, onto a grid aligned to multiples of the
+  cell size, and mosaics the projected sheets, grouped by any cartogram
+  attribute, without further resampling.
   Every run writes a timestamped CSV report and a fixed-width log.
 type: software
-version: "0.1.0"
+version: "0.1.1"
 date-released: "2026-11-05"
 license: Apache-2.0
 authors:

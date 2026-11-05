@@ -88,8 +88,31 @@ def test_mosaic_by_group_field(tbx, fake, clipped):
     assert not [t for lv, t in fake.MESSAGES if lv == "WARN"]
 
 
-def test_snapped_extent_and_alignment_warning(tbx, fake, clipped):
-    fake.STATE["honour_extent"] = False
+def test_each_sheet_projected_once_on_the_common_grid(tbx, fake, clipped):
+    _mosaic(tbx, clipped)
+    scratch = os.path.join(clipped.root, "scratch")
+    prj = calls(fake, "ProjectRaster")
+    assert sorted(os.path.basename(c[1][0]) for c in prj) == [
+        "MAG_51B60925.tif", "MAG_51B60926.tif", "MAG_51B61001.tif", "MAG_51B61002.tif"]
+    for c in prj:
+        _src, out, sr, resampling, cell, trans, reg = c[1]
+        assert os.path.dirname(out) == scratch and os.path.basename(out).startswith("msm_prj_")
+        assert sr.factoryCode == 3763 and resampling == "BILINEAR" and cell == 0.4
+        assert trans == "Lisboa_To_ETRS_1989_NTv2" and reg == "0 0"
+        # settings that could clip or re-snap the projected sheet are cleared
+        assert c[2]["snapRaster"] is None and c[2]["extent"] is None
+        assert out not in fake.EXISTING                    # temporary, deleted
+    # the mosaic is made from the projected sheets, which share the 0.4 m grid
+    mos = calls(fake, "MosaicToNewRaster")
+    assert all(os.path.basename(p).startswith("msm_prj_")
+               for c in mos for p in c[1][0].split(";"))
+    for name in ("MAG_Folha_25k_609.tif", "MAG_Folha_25k_610.tif"):
+        e = fake.RASTERS[os.path.join(clipped.mosaic, name)]["extent"]
+        assert all(abs(v / 0.4 - round(v / 0.4)) < 1e-9 for v in e)
+
+
+def test_alignment_warning_when_mosaic_grid_is_off(tbx, fake, clipped):
+    fake.STATE["mosaic_aligned"] = False
     _mosaic(tbx, clipped)
     rows = read_csv(latest(clipped.mosaic, "MAG_mosaic_Folha_25k_*.csv"))
     assert all("grid not aligned" in r["notes"] for r in rows)
@@ -111,6 +134,7 @@ def test_same_datum_needs_no_transformation(tbx, fake, clipped):
     _mosaic(tbx, clipped, out_sr=fake.SpatialReference(102164))
     rows = read_csv(latest(clipped.mosaic, "MAG_mosaic_Folha_25k_*.csv"))
     assert all(r["transformation"] == "" for r in rows)
+    assert all(c[1][5] == "" for c in calls(fake, "ProjectRaster"))
 
 
 def test_existing_mosaic_not_rewritten(tbx, fake, clipped):
@@ -142,8 +166,12 @@ def test_greyscale_among_rgb_is_expanded(tbx, fake, clipped, monkeypatch):
     assert [c[1][2] for c in mos] == ["MAG_Folha_25k_609.tif", "MAG_Folha_25k_610.tif"]
     assert all(c[1][6] == 3 for c in mos)
     tmp = os.path.join(clipped.root, "scratch", "msm_rgb_MAG_51B61001.tif")
-    # group 610 mosaics the temporary copy instead of the single-band sheet
-    assert tmp in mos[1][1][0].split(";") and grey not in mos[1][1][0].split(";")
+    prj = os.path.join(clipped.root, "scratch", "msm_prj_MAG_51B61001.tif")
+    # the three-band copy, not the single-band sheet, is projected and mosaicked
+    assert [c[1][1] for c in calls(fake, "ProjectRaster") if c[1][0] == tmp] == [prj]
+    assert not [c for c in calls(fake, "ProjectRaster") if c[1][0] == grey]
+    assert prj in mos[1][1][0].split(";")
+    assert prj not in fake.EXISTING
     comp = calls(fake, "CompositeBands")
     assert len(comp) == 1 and comp[0][1] == ([grey, grey, grey], tmp)
     # copy made in the native CRS: projecting / clipping settings cleared

@@ -6,7 +6,7 @@
 [![ArcGIS Pro](https://img.shields.io/badge/ArcGIS_Pro-3.0%2B-green.svg)](https://www.esri.com/en-us/arcgis/products/arcgis-pro/overview)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org)
 [![CI](https://github.com/PedroMMGoncalves/mapsheet-mosaic-arcgis-tools/actions/workflows/ci.yml/badge.svg)](https://github.com/PedroMMGoncalves/mapsheet-mosaic-arcgis-tools/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.0-lightgrey.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.1-lightgrey.svg)](CHANGELOG.md)
 
 Map Sheet Mosaic is an ArcGIS Pro Python toolbox (`MapSheetMosaic.pyt`) for
 archives of scanned map sheets that have already been georeferenced. It has
@@ -82,7 +82,7 @@ flowchart TD
 | # | Tool | Purpose |
 | --- | --- | --- |
 | **1** | Clip and Rename Sheets | Lists raster files by extension in a folder tree (the output folder is excluded). For each raster: sheet identification by largest overlap with the cartogram, coverage in percent of the sheet area, extraction of a scan *variant* label from the file name, and an optional count of pixels that already carry the NoData value. Then clipping by the sheet polygon in the native coordinate system, without resampling. Duplicate scans receive `_dup1`, `_dup2`, ... in sorted input order. A dry run writes only the CSV plan and the log. Existing outputs are skipped, so an interrupted run can be resumed. |
-| **2** | Mosaic Sheets by Map | Takes the raster layers visible in the active map whose file name starts with `PREFIX_` (a layer inside a hidden group layer counts as hidden), plus an optional list. Each input is identified again against the cartogram, so the tool does not depend on file names or on the CSV of Tool 1. Inputs are grouped by the value of a cartogram field and mosaicked with `Mosaic To New Raster` into the output coordinate system, with an explicit datum transformation when the datums differ. The output extent is snapped to multiples of the cell size and the grid alignment is verified after writing. Missing sheets per group are reported. |
+| **2** | Mosaic Sheets by Map | Takes the raster layers visible in the active map whose file name starts with `PREFIX_` (a layer inside a hidden group layer counts as hidden), plus an optional list. Each input is identified again against the cartogram, so the tool does not depend on file names or on the CSV of Tool 1. Inputs are grouped by the value of a cartogram field. Each sheet is projected with `Project Raster` (explicit datum transformation when the datums differ, registration point 0 0, so cells lie on multiples of the cell size), and the projected sheets of each group are combined with `Mosaic To New Raster` without further resampling. The grid alignment is verified after writing. Missing sheets per group are reported. |
 
 ### Input checks of Tool 2
 
@@ -101,7 +101,8 @@ flowchart TD
     G3 -- no --> STOP
     G3 -- yes --> TR["Datum transformation<br/>explicit, NTv2 preferred"]
     TR --> GR["Group by field value<br/>list missing sheets"]
-    GR --> M["Mosaic To New Raster per group<br/>snapped extent, output CRS, fixed cell size"]
+    GR --> PR["Project Raster per sheet<br/>transformation, cell size, registration point 0 0"]
+    PR --> M["Mosaic To New Raster per group<br/>sheets already on the common grid"]
     M --> P["Set NoData, statistics, pyramids<br/>verify grid alignment"]
 ```
 
@@ -147,23 +148,33 @@ sheet with its rasters and writes nothing.
 
 ### Projection and mosaicking with a single resampling
 
-Each pixel is resampled once, in `Mosaic To New Raster`, which writes directly
-in the output coordinate system (default ETRS89 / PT-TM06, EPSG:3763) with
-the selected resampling method and an explicit geographic transformation
+Each pixel is resampled once. Every sheet is projected to the output
+coordinate system (default ETRS89 / PT-TM06, EPSG:3763) with *Project Raster*,
+using the selected resampling method, an explicit geographic transformation
 (an NTv2 grid transformation is preferred when listed; Junkins and Farley,
-1995). The output extent is the union of the input footprints projected to
-the output coordinate system, snapped outward to multiples of the cell size
-$`c`$:
+1995), the cell size $`c`$ and the registration point $`(0, 0)`$. The
+registration point fixes the cell corners of every projected sheet at
 
 ```math
-x'_{\min} = c \left\lfloor \frac{x_{\min}}{c} \right\rfloor, \qquad
-x'_{\max} = c \left\lceil \frac{x_{\max}}{c} \right\rceil, \qquad
-\text{and likewise for } y
+x = k\,c, \qquad y = l\,c, \qquad k, l \in \mathbb{Z}
 ```
 
-Mosaics of neighbouring groups therefore share one grid. Because the
-honouring of the extent environment is not assumed, the corner coordinates of
-the written raster are checked after writing, and a warning is issued when
+and each sheet is snapped outward to this grid, so that all projected sheets,
+and therefore all mosaics of a collection, share one grid. The projected
+sheets, which are temporary, are then combined with *Mosaic To New Raster*;
+because their cells coincide, the mosaic copies cell values without a second
+resampling.
+
+The projection is not left to *Mosaic To New Raster* itself: according to its
+documentation, that tool does not honour the *Output Coordinate System*,
+*Geographic Transformations* or *Snap Raster* environments, and in practice
+its output grid origin follows the projected footprints rather than a
+requested extent (observed offset of 0.42 and 0.04 cells in a first test).
+*Project Raster* takes both the transformation and the cell alignment as
+documented parameters.
+
+The corner coordinates of each written mosaic are checked, and a warning is
+issued when
 
 ```math
 \left| \frac{x}{c} - \mathrm{round}\left(\frac{x}{c}\right) \right| > 10^{-3}
@@ -253,9 +264,11 @@ off with *Expand single-band greyscale inputs to three bands*.
   (`arcgispro-py3`).
 - `arcpy` and `numpy`, both bundled with ArcGIS Pro; Python standard library
   otherwise. **No additional packages.**
-- All geoprocessing tools used (Clip Raster, Mosaic To New Raster, Set Raster
-  Properties, Calculate Statistics, Build Pyramids) are Data Management tools
-  available at every licence level. No extension is required.
+- All geoprocessing tools used (Clip Raster, Composite Bands, Project Raster,
+  Mosaic To New Raster, Set Raster Properties, Calculate Statistics, Build
+  Pyramids) are Data Management tools available at every licence level. No
+  extension is required. GDAL (bundled with ArcGIS Pro) is used to detect
+  colour tables.
 - A polygon cartogram of the sheets with a sheet code field, in the same
   coordinate system as the georeferenced rasters.
 - For datum transformations based on grid files that are not installed by
@@ -459,8 +472,10 @@ scope of the suite and is validated in ArcGIS Pro.
 | --- | --- |
 | Tool 1, sheet identification, clipping and reporting | Validated in ArcGIS Pro on 254 rasters in its original form: about 16 s per raster for clipping with LZW compression, pyramids and statistics, about 0.5 s for the pixel check, 70 min in total |
 | Tool 1, parameters added in 0.1.0 (extensions, CSV fields, NoData value) | Covered by the test suite; pending validation in ArcGIS Pro |
-| Tool 2 | Covered by the test suite; pending validation in ArcGIS Pro: population of the transformation list, honouring of the extent environment (absence of the alignment warning), absence of systematic offsets against a PT-TM06 reference, mosaic background written with the NoData value |
-| Tool 2, greyscale expansion | Three-band copy verified with ArcGIS Pro 3.7 on one greyscale sheet: same coordinate system, extent and cell size, NoData on all bands, each band identical to the source cell by cell, temporary copy deleted. A mosaic containing expanded sheets is pending validation |
+| Tool 2, transformation list | Verified in ArcGIS Pro 3.7: for ESRI:102165 → EPSG:3763, `ListTransformations` returns 18 transformations and `Datum_Lisboa_Hayford_To_ETRS_1989_NTv2` is preselected |
+| Tool 2, projection and grid | Verified in ArcGIS Pro 3.7 on sheets of the first collection: `Project Raster` with registration point 0 0 gives grids exactly on multiples of 0.4 m; the transformation parameter is honoured (NTv2 and 7-parameter results differ); the mosaic of projected sheets keeps the grid and copies cell values unchanged; no NoData cells along the seams between adjacent sheets; cells outside the sheets written as 0 and flagged NoData on the three bands |
+| Tool 2, greyscale expansion | Verified in ArcGIS Pro 3.7 on one greyscale sheet, alone and within a three-sheet mosaic: same coordinate system, extent and cell size, NoData on all bands, each band identical to the source cell by cell, temporary copies deleted |
+| Tool 2, full collection run | Pending: absence of systematic offsets against an independent PT-TM06 reference, processing time per group |
 
 ---
 
@@ -480,8 +495,9 @@ scope of the suite and is validated in ArcGIS Pro.
 - **Mosaic background.** `Mosaic To New Raster` has no NoData or background
   parameter. The NoData value is assigned afterwards with
   `Set Raster Properties`, which assumes that cells not covered by any input
-  are written with that value. This requires verification for NoData values
-  other than 0. The same NoData value should be used in both tools.
+  are written with that value. This was verified in ArcGIS Pro 3.7 for
+  NoData 0 and requires verification for other values. The same NoData value
+  should be used in both tools.
 - **Overlaps.** Where inputs overlap (sheet boundaries), the last input in
   sorted order is kept (mosaic method `LAST`).
 - **Homogeneous inputs.** All inputs of a Tool 2 run must share pixel type
@@ -507,7 +523,7 @@ scope of the suite and is validated in ArcGIS Pro.
 | Tool 2: `Single-band rasters with a colour table, or not readable by GDAL, are not expanded` | The listed single-band rasters are palette rasters, or GDAL cannot open them | Convert palette rasters with *Colormap To RGB* and switch off the originals |
 | Tool 2: visible layers reported as ignored | File names do not start with `PREFIX_` | Use the prefix of Tool 1, or list the rasters under *Additional rasters* |
 | Tool 2: `Datums differ ... and no transformation is available`, or no NTv2 option in the list | `ListTransformations` returns no (grid) transformation for the coordinate system pair | Install the *ArcGIS Coordinate Systems Data* grids, or register the Portuguese NTv2 grid as a custom geographic transformation (see [Datum transformation](#datum-transformation-ntv2-grids-for-portugal)); the list accepts only names returned by `ListTransformations` |
-| Tool 2: `grid not aligned to multiples of the cell size` | Extent environment not honoured by the geoprocessing tool | The mosaic is valid but off the common grid; report the case with the `.log` |
+| Tool 2: `grid not aligned to multiples of the cell size` | Not expected since version 0.1.1 (projection by `Project Raster` with registration point); with earlier versions, Mosaic To New Raster placed the grid origin at the projected footprint | Rerun with the current version into a new output folder; with the current version, report the case with the `.log` |
 | Tool 2: `No active map` | Tool run without an active map view | Open a map view and run the tool in the foreground |
 | Outputs not rewritten (`output exists` / `EXISTS`) | Outputs present from an earlier run | Intended for resuming; delete the outputs or use a new output folder to recompute |
 

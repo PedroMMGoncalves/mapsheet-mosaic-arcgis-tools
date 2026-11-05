@@ -9,8 +9,8 @@ Tool 1 identifies the cartogram sheet covered by each raster from its
 georeferencing, clips the collar (the area outside the neat line) with the
 sheet polygon and renames the result by sheet code. Tool 2 mosaics the
 selected clipped sheets grouped by any cartogram field (e.g. the parent map
-sheet at a smaller scale) and projects them to the output coordinate system
-in the same step, so that each pixel is resampled only once.
+sheet at a smaller scale) in the output coordinate system; each pixel is
+resampled only once.
 
 Workflow
 --------
@@ -25,9 +25,9 @@ Dependencies
 - ArcGIS Pro 3.x with its default Python environment (arcpy, numpy, and
   GDAL/osgeo to detect colour tables); Python standard library otherwise.
   No additional packages.
-- Clip, Composite Bands, Mosaic To New Raster, Set Raster Properties,
-  Calculate Statistics and Build Pyramids are Data Management tools
-  available at every licence level.
+- Clip, Composite Bands, Project Raster, Mosaic To New Raster, Set Raster
+  Properties, Calculate Statistics and Build Pyramids are Data Management
+  tools available at every licence level.
 - Tool 2 reads the CURRENT project (visible layers) and therefore runs in
   the foreground only.
 
@@ -40,7 +40,16 @@ Design decisions
   only to extract a "variant" label, which is recorded in the CSV.
 - Clipping is performed in the native CRS with NO_MAINTAIN_EXTENT, which
   keeps the source cell grid (no resampling in tool 1).
-- Projection and datum transformation are applied once, in tool 2.
+- Projection and datum transformation are applied once, in tool 2, sheet
+  by sheet with Project Raster: explicit geographic transformation and
+  registration point (0, 0), so that every projected sheet lies on one grid
+  with cell corners at multiples of the cell size. The projected sheets are
+  then mosaicked with Mosaic To New Raster, which copies cells without
+  further resampling because the grids coincide. Projected sheets are
+  temporary (scratch folder) and deleted after each mosaic. Mosaic To New
+  Raster is not used for projection because it does not honour the Output
+  Coordinate System, Geographic Transformations or Snap Raster environments
+  and its output grid origin cannot be controlled.
 - A single NoData value (parameter, default 0) is assigned to all bands.
   Tool 1 optionally counts source pixels inside the sheet that already
   carry this value, since they become NoData after clipping.
@@ -91,14 +100,19 @@ Methodological limitations
   tool 2 stops.
 - Mosaic To New Raster has no NoData or background parameter. The NoData
   value is assigned afterwards with Set Raster Properties, which assumes
-  that cells not covered by any input are written with that value. This
-  requires verification for NoData values other than 0. The same NoData
-  value should be used in both tools.
+  that cells not covered by any input are written with that value
+  (verified in ArcGIS Pro 3.7 for NoData 0; to be verified for other
+  values). The same NoData value should be used in both tools.
 - The mosaic cell size is fixed (default 0.4 output CRS units). Coarser
   inputs are upsampled, which adds pixels but no information.
-- Alignment of the mosaic grid to multiples of the cell size is requested
-  through the extent environment and verified after writing; a warning is
-  issued when the grid is not aligned.
+- Alignment of the mosaic grid to multiples of the cell size follows from
+  the registration point of Project Raster and is verified after writing;
+  a warning is issued when the grid is not aligned.
+- Each projected sheet is snapped outward to the common grid, so adjacent
+  sheets can share a boundary row or column of cells; there the mosaic
+  keeps one of them (mosaic method LAST). Bilinear or cubic resampling next
+  to the NoData area outside a clipped sheet may leave cells without data
+  along sheet boundaries.
 - Where inputs overlap (sheet boundaries) the mosaic keeps the last input
   in sorted order (mosaic method LAST).
 - Datums are compared by geographic CRS name. When they differ, a datum
@@ -128,7 +142,7 @@ import arcpy
 import numpy as np
 
 
-TOOLBOX_VERSION = "0.1.0"  # same value as `version:` in CITATION.cff
+TOOLBOX_VERSION = "0.1.1"  # same value as `version:` in CITATION.cff
 
 CSV_DELIM = ";"  # list separator of spreadsheet software in decimal-comma locales
 # Tool 1 CSV: these columns, with the selected cartogram fields in between
@@ -427,6 +441,25 @@ def _has_colour_table(path):
             return ds.GetRasterBand(1).GetColorTable() is not None
     except Exception:
         return None
+
+
+def _project_sheet(in_path, out_path, out_sr, transformation, cell_size, resampling):
+    """Project one sheet onto a grid aligned to multiples of the cell size.
+
+    Project Raster is used because it takes the geographic transformation
+    and the cell alignment as documented parameters: the registration point
+    (0, 0) places cell corners at x = k * cell_size, y = l * cell_size, so
+    all projected sheets share one grid. Mosaic To New Raster does not honour
+    the Output Coordinate System, Geographic Transformations or Snap Raster
+    environments, and its output grid origin is not controllable. Settings
+    that could clip or re-snap the output are cleared for the call.
+    """
+    if arcpy.Exists(out_path):
+        arcpy.management.Delete(out_path)
+    with arcpy.EnvManager(outputCoordinateSystem=None, extent=None, snapRaster=None,
+                          compression="LZW", pyramid="NONE", rasterStatistics="NONE"):
+        arcpy.management.ProjectRaster(in_path, out_path, out_sr, resampling,
+                                       cell_size, transformation or "", "0 0")
 
 
 def _expand_to_rgb(path, out_path, nodata):
@@ -1075,38 +1108,27 @@ class MosaicSheets(object):
                 if arcpy.Exists(out_path):
                     rec["state"], rec["notes"] = "EXISTS", "not rewritten"
                 else:
-                    # Projected union extent snapped outward to cell multiples
                     cs = c.cs
-                    xs, ys = [], []
-                    for p in src:
-                        fp = _footprint(arcpy.Raster(p))
-                        pe = (fp.projectAs(c.out_sr, trans) if trans
-                              else fp.projectAs(c.out_sr)).extent
-                        xs += [pe.XMin, pe.XMax]
-                        ys += [pe.YMin, pe.YMax]
-                    ext = arcpy.Extent(math.floor(min(xs) / cs) * cs,
-                                       math.floor(min(ys) / cs) * cs,
-                                       math.ceil(max(xs) / cs) * cs,
-                                       math.ceil(max(ys) / cs) * cs)
-                    env = dict(outputCoordinateSystem=c.out_sr, extent=ext,
-                               resamplingMethod=c.resampling, compression="LZW",
-                               overwriteOutput=False)
-                    if trans:
-                        env["geographicTransformations"] = trans
-                    # Temporary three-band copies of greyscale members, made in
-                    # the native CRS before the projecting environment is set
+                    # 1. per sheet: optional three-band copy (native CRS), then
+                    #    Project Raster with the explicit transformation and the
+                    #    registration point (0, 0): the single resampling step,
+                    #    onto a grid aligned to multiples of the cell size.
+                    # 2. mosaic of the projected sheets, which share that grid,
+                    #    so Mosaic To New Raster copies cells without resampling.
                     tmp, mosaic_src = [], []
                     try:
                         for p in src:
+                            stem = os.path.splitext(os.path.basename(p))[0]
+                            q = p
                             if p in expand:
-                                q = os.path.join(scratch, "msm_rgb_{}.tif".format(
-                                    os.path.splitext(os.path.basename(p))[0]))
+                                q = os.path.join(scratch, "msm_rgb_{}.tif".format(stem))
                                 _expand_to_rgb(p, q, c.nodata)
                                 tmp.append(q)
-                                mosaic_src.append(q)
-                            else:
-                                mosaic_src.append(p)
-                        with arcpy.EnvManager(**env):
+                            r = os.path.join(scratch, "msm_prj_{}.tif".format(stem))
+                            _project_sheet(q, r, c.out_sr, trans, cs, c.resampling)
+                            tmp.append(r)
+                            mosaic_src.append(r)
+                        with arcpy.EnvManager(compression="LZW", overwriteOutput=False):
                             arcpy.management.MosaicToNewRaster(
                                 ";".join(mosaic_src), c.out_folder, name, c.out_sr,
                                 pixel_type, cs, n_bands, "LAST", "FIRST")
@@ -1114,13 +1136,13 @@ class MosaicSheets(object):
                         for q in tmp:
                             if arcpy.Exists(q):
                                 arcpy.management.Delete(q)
-                    if tmp:
+                    if any(p in expand for p in src):
                         _add_note(rec, "expanded to 3 bands: {}".format(" ".join(
                             sorted(os.path.basename(p) for p in src if p in expand))))
                     arcpy.management.SetRasterProperties(out_path, nodata=nodata_spec)
                     arcpy.management.CalculateStatistics(out_path)
                     arcpy.management.BuildPyramids(out_path, -1, "NONE", c.resampling)
-                    # Verify grid alignment (environment honouring is not assumed)
+                    # Verify grid alignment of the written mosaic
                     oe = arcpy.Raster(out_path).extent
                     off = [abs(v / cs - round(v / cs)) for v in (oe.XMin, oe.YMax)]
                     if max(off) > 1e-3:
